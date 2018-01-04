@@ -4,6 +4,7 @@ from onmt.modules.Gate import ContextGateFactory
 from onmt.modules.GlobalAttention import GlobalAttention
 from onmt.modules.ConvMultiStepAttention import ConvMultiStepAttention
 from onmt.modules.ImageEncoder import ImageEncoder
+from onmt.modules.SpeechEncoder import SpeechEncoder
 from onmt.modules.CopyGenerator import CopyGenerator, CopyGeneratorLossCompute
 from onmt.modules.StructuredAttention import MatrixTree
 from onmt.modules.Transformer import TransformerEncoder, TransformerDecoder
@@ -20,7 +21,7 @@ if can_use_sru:
 
 
 # For flake8 compatibility.
-__all__ = [GlobalAttention, ImageEncoder, CopyGenerator, MultiHeadedAttention,
+__all__ = [GlobalAttention, ImageEncoder, SpeechEncoder, CopyGenerator, MultiHeadedAttention,
            LayerNorm, Bottle, BottleLinear, BottleLayerNorm, BottleSoftmax,
            TransformerEncoder, TransformerDecoder, Embeddings, Elementwise,
            MatrixTree, WeightNormConv2d, ConvMultiStepAttention,

@@ -109,6 +109,8 @@ class Embeddings(nn.Module):
             pe = PositionalEncoding(dropout, self.embedding_size)
             self.make_embedding.add_module('pe', pe)
 
+        print "INSIDE EMBEDDING:", self.word_lut.weight.data.size(), vocab_sizes, emb_dims
+        
     @property
     def word_lut(self):
         return self.make_embedding[0][0]
@@ -120,6 +122,8 @@ class Embeddings(nn.Module):
     def load_pretrained_vectors(self, emb_file, fixed):
         if emb_file:
             pretrained = torch.load(emb_file)
+            print pretrained.size()
+            print self.word_lut.weight.data.size()
             self.word_lut.weight.data.copy_(pretrained)
             if fixed:
                 self.word_lut.weight.requires_grad = False

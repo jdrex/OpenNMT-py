@@ -246,6 +246,7 @@ class StdRNNDecoder(RNNDecoderBase):
             rnn_output, hidden = self.rnn(emb, state.hidden[0])
         else:
             rnn_output, hidden = self.rnn(emb, state.hidden)
+        
         # Result Check
         input_len, input_batch, _ = input.size()
         output_len, output_batch, _ = rnn_output.size()
@@ -259,7 +260,7 @@ class StdRNNDecoder(RNNDecoderBase):
             context.transpose(0, 1)                   # (contxt_len, batch, d)
         )
         attns["std"] = attn_scores
-
+        
         # Calculate the context gate.
         if self.context_gate is not None:
             outputs = self.context_gate(
@@ -340,6 +341,11 @@ class InputFeedRNNDecoder(RNNDecoderBase):
             rnn_output, hidden = self.rnn(emb_t, hidden)
             attn_output, attn = self.attn(rnn_output,
                                           context.transpose(0, 1))
+
+            #print "rnn_output", rnn_output.size()
+            #print "attn_output", attn_output.size()
+            #print "attn", attn.size()
+
             if self.context_gate is not None:
                 output = self.context_gate(
                     emb_t, rnn_output, attn_output
@@ -347,6 +353,7 @@ class InputFeedRNNDecoder(RNNDecoderBase):
                 output = self.dropout(output)
             else:
                 output = self.dropout(attn_output)
+                #output = self.dropout(rnn_output)
             outputs += [output]
             attns["std"] += [attn]
 
@@ -383,6 +390,100 @@ class InputFeedRNNDecoder(RNNDecoderBase):
         """
         return self.embeddings.embedding_size + self.hidden_size
 
+class InputFeedRNNDecoderNoAttention(RNNDecoderBase):
+    """
+    Stardard RNN decoder, with Input Feed and NO Attention.
+    """
+
+    def forward(self, input, context, state):
+        """
+        Forward through the decoder.
+        Args:
+            input (LongTensor): a sequence of input tokens tensors
+                                of size (len x batch x nfeats).
+            context (FloatTensor): output(tensor sequence) from the encoder
+                        RNN of size (src_len x batch x hidden_size).
+            state (FloatTensor): hidden state from the encoder RNN for
+                                 initializing the decoder.
+        Returns:
+            outputs (FloatTensor): a Tensor sequence of output from the decoder
+                                   of shape (len x batch x hidden_size).
+            state (FloatTensor): final hidden state from the decoder.
+            attns (dict of (str, FloatTensor)): a dictionary of different
+                                type of attention Tensor from the decoder
+                                of shape (src_len x batch).
+        """
+        # Args Check
+        assert isinstance(state, RNNDecoderState)
+        input_len, input_batch, _ = input.size()
+        contxt_len, contxt_batch, _ = context.size()
+        aeq(input_batch, contxt_batch)
+        # END Args Check
+
+        # Run the forward pass of the RNN.
+        hidden, outputs = self._run_forward_pass(input, context, state)
+
+        # Update the state with the result.
+        final_output = outputs[-1]
+        state.update_state(hidden, final_output.unsqueeze(0), None)
+
+        # Concatenates sequence of tensors along a new dimension.
+        outputs = torch.stack(outputs)
+
+        return outputs, state, None
+
+    def _run_forward_pass(self, input, context, state):
+        """
+        See StdRNNDecoder._run_forward_pass() for description
+        of arguments and return values.
+
+        JD: got rid of copy, coverage, context_gate (these are all attention-dependent?)
+        """
+        # Additional args check.
+        output = state.input_feed.squeeze(0)
+        output_batch, _ = output.size()
+        input_len, input_batch, _ = input.size()
+        aeq(input_batch, output_batch)
+        # END Additional args check.
+
+        # Initialize local and return variables.
+        outputs = []
+
+        emb = self.embeddings(input)
+        assert emb.dim() == 3  # len x batch x embedding_dim
+
+        hidden = state.hidden
+
+        # Input feed concatenates hidden state with
+        # input at every time step.
+        for i, emb_t in enumerate(emb.split(1)):
+            emb_t = emb_t.squeeze(0)
+            emb_t = torch.cat([emb_t, output], 1)
+
+            rnn_output, hidden = self.rnn(emb_t, hidden)
+            output = self.dropout(rnn_output)
+            outputs += [output]
+
+        # Return result.
+        return hidden, outputs
+
+    def _build_rnn(self, rnn_type, input_size,
+                   hidden_size, num_layers, dropout):
+        assert not rnn_type == "SRU", "SRU doesn't support input feed! " \
+                "Please set -input_feed 0!"
+        if rnn_type == "LSTM":
+            stacked_cell = onmt.modules.StackedLSTM
+        else:
+            stacked_cell = onmt.modules.StackedGRU
+        return stacked_cell(num_layers, input_size,
+                            hidden_size, dropout)
+
+    @property
+    def _input_size(self):
+        """
+        Using input feed by concatenating input with attention vectors.
+        """
+        return self.embeddings.embedding_size + self.hidden_size
 
 class NMTModel(nn.Module):
     """
@@ -428,6 +529,74 @@ class NMTModel(nn.Module):
             attns = None
         return out, attns, dec_state
 
+class DiscrimModel(nn.Module):
+    """
+    The encoder + decoder Neural Machine Translation Model.
+    """
+    def __init__(self, encoder, classifier, multigpu=False):
+        """
+        Args:
+            encoder(*Encoder): the various encoder.
+            decoder(*Decoder): the various decoder.
+            multigpu(bool): run parellel on multi-GPU?
+        """
+        self.multigpu = multigpu
+        super(DiscrimModel, self).__init__()
+        self.encoder = encoder
+        self.classifier = classifier
+
+    def forward(self, src, lengths):
+        """
+        Args:
+            src(FloatTensor): a sequence of source tensors with
+                    optional feature tensors of size (len x batch).
+            lengths([int]): an array of the src length.
+            dec_state: A decoder state object
+        Returns:
+            outputs (FloatTensor): (batch x likelihood): batch predictions
+        """
+        src = src
+        enc_hidden, context = self.encoder(src, lengths)
+        # context = len x batch x dim
+        '''
+        enc_hidden = torch.cat((enc_hidden[0], enc_hidden[1]), 0)
+        enc_hidden = enc_hidden.permute(1, 0, 2)
+        #print "encoder hidden size:", enc_hidden.size()
+        s = enc_hidden.size()
+        enc_hidden = enc_hidden.contiguous()
+        enc_hidden = enc_hidden.view(s[0], s[1]*s[2])
+        '''
+        #print "encoder hidden size:", enc_hidden.size()
+        # enc_hidden = last hidden state
+        # context = all hidden states
+
+        # two options:
+        # - MLP that just operates on the last state (like orig paper)
+        #   - should probably redo decoder that doesn't use context for decoding at all
+        #   - actually maybe it already doesn't????
+        # - recurrent model that operates on whole context
+        out = self.classifier(context.view(-1, context.size(2)))
+        return out
+
+class DiscrimClassifier(nn.Module):
+    def __init__(self, input_size, hidden_size, num_layers):
+        super(DiscrimClassifier, self).__init__()
+        print "classifier input size:", input_size
+        self.input_size = input_size#*4
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+
+        layers = [nn.Linear(self.input_size, self.hidden_size), nn.LeakyReLU()]
+        for l in range(num_layers-1):
+            layers.append(nn.Linear(self.hidden_size, self.hidden_size))
+            layers.append(nn.LeakyReLU())
+        layers.append(nn.Linear(self.hidden_size, 1)) # 2 for CELoss
+        #layers.append(nn.Sigmoid())
+
+        self.classifier = nn.Sequential(*layers)
+        
+    def forward(self, input):
+        return self.classifier(input)
 
 class DecoderState(object):
     """

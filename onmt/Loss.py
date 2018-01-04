@@ -129,6 +129,36 @@ class NMTLossCompute(LossComputeBase):
 
         return loss, stats
 
+class UnsupNMTLossCompute(NMTLossCompute):
+    """
+    Standard NMT Loss Computation.
+    """
+    def __init__(self, generator, tgt_vocab):
+        super(UnsupNMTLossCompute, self).__init__(generator, tgt_vocab)
+
+        weight = torch.ones(len(tgt_vocab))
+        weight[self.padding_idx] = 0
+        self.criterion = nn.NLLLoss(weight, size_average=False)
+
+    def make_shard_state(self, batch, output, range_, attns=None):
+        """ See base class for args description. """
+        return {
+            "output": output,
+            "target": batch.tgt[range_[0] + 1: range_[1]],
+        }
+
+    def compute_loss(self, batch, output, target):
+        """ See base class for args description. """
+        scores = self.generator(self.bottle(output))
+
+        target = target.view(-1)
+
+        loss = self.criterion(scores, target)
+        loss_data = loss.data.clone()
+
+        stats = self.stats(loss_data, scores.data, target.data)
+
+        return loss, stats
 
 def filter_shard_state(state):
     for k, v in state.items():

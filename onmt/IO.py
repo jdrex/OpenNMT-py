@@ -252,10 +252,11 @@ def peek(seq):
 class OrderedIterator(torchtext.data.Iterator):
     def create_batches(self):
         if self.train:
-            self.batches = torchtext.data.pool(
+            self.batches = torchtext.data.noisy_pool(
                 self.data(), self.batch_size,
                 self.sort_key, self.batch_size_fn,
-                random_shuffler=self.random_shuffler)
+                random_shuffler=self.random_shuffler,
+                dropout = self.dropout, shuffleK = self.shuffleK)
         else:
             self.batches = []
             for b in torchtext.data.batch(self.data(), self.batch_size,
@@ -313,16 +314,17 @@ class ONMTDataset(torchtext.data.Dataset):
         src_truncate = src_seq_length_trunc
 
         src_examples = read_corpus_file(src_path, src_truncate, "src")
-        (_, src_feats), src_examples = peek(src_examples)
+        (t, src_feats), src_examples = peek(src_examples)
+        print "first src:", t
         src_examples = (ex for ex, nfeats in src_examples)
         self.n_src_feats = src_feats
-
         # if tgt_path exists, then we need to do the same thing as we did
         # for the source data
         if tgt_path is not None:
             tgt_truncate = tgt_seq_length_trunc
             tgt_examples = read_corpus_file(tgt_path, tgt_truncate, "tgt")
-            (_, tgt_feats), tgt_examples = peek(tgt_examples)
+            (t, tgt_feats), tgt_examples = peek(tgt_examples)
+            print "first tgt:", t
             tgt_examples = (ex for ex, nfeats in tgt_examples)
             self.n_tgt_feats = tgt_feats
         else:
@@ -342,15 +344,30 @@ class ONMTDataset(torchtext.data.Dataset):
         if dynamic_dict:
             examples = self.dynamic_dict(examples)
 
+        self.dynamic_dict_opt = dynamic_dict
         # Peek at the first to see which fields are used.
         ex, examples = peek(examples)
         keys = ex.keys()
-
+        print "CREATING DATASET"
+        print keys
+        keys = [k for k in keys if k in fields.keys()]
+        print fields.keys()
+        print keys
+        
         fields = [(k, fields[k]) for k in keys]
+        for f in fields:
+            print f
+            break
         example_values = ([ex[k] for k in keys] for ex in examples)
+        for exv in example_values:
+            print exv
+            break
         out_examples = (torchtext.data.Example.fromlist(ex_values, fields)
                         for ex_values in example_values)
-
+        for ex in out_examples:
+            print ex
+            break
+        
         def filter_pred(example):
             return 0 < len(example.src) <= src_seq_length \
                 and 0 < len(example.tgt) <= tgt_seq_length
@@ -405,7 +422,11 @@ class ONMTDataset(torchtext.data.Dataset):
                     scores[:, b, offset + i].fill_(1e-20)
         return scores
 
-
+    def set_label(self, label):
+        print "setting label:", hasattr(self.examples[0], 'tgt')
+        for example in self.examples:
+            example.tgt = torch.LongTensor([label])
+        
 def load_image_libs():
     "Conditional import of torch image libs."
     global Image, transforms

@@ -15,6 +15,8 @@ class Optim(object):
         elif self.method == 'adam':
             self.optimizer = optim.Adam(self.params, lr=self.lr,
                                         betas=self.betas, eps=1e-9)
+        elif self.method == 'rmsprop':
+            self.optimizer = optim.RMSprop(self.params, lr=self.lr)
         else:
             raise RuntimeError("Invalid optim method: " + self.method)
 

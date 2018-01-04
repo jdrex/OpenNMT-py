@@ -53,6 +53,7 @@ def main():
     if opt.cuda:
         torch.cuda.set_device(opt.gpu)
     translator = onmt.Translator(opt, dummy_opt.__dict__)
+    print translator.model
     out_file = codecs.open(opt.output, 'w', 'utf-8')
     pred_score_total, pred_words_total = 0, 0
     gold_score_total, gold_words_total = 0, 0

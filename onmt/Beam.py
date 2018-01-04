@@ -87,7 +87,8 @@ class Beam(object):
         prevK = bestScoresId / numWords
         self.prevKs.append(prevK)
         self.nextYs.append((bestScoresId - prevK * numWords))
-        self.attn.append(attnOut.index_select(0, prevK))
+        if attnOut is not None:
+            self.attn.append(attnOut.index_select(0, prevK))
 
         if self.globalScorer is not None:
             self.globalScorer.updateGlobalState(self)
@@ -131,9 +132,13 @@ class Beam(object):
         hyp, attn = [], []
         for j in range(len(self.prevKs[:timestep]) - 1, -1, -1):
             hyp.append(self.nextYs[j+1][k])
-            attn.append(self.attn[j][k])
+            if len(self.attn) > 0:
+                attn.append(self.attn[j][k])
             k = self.prevKs[j][k]
-        return hyp[::-1], torch.stack(attn[::-1])
+        a = None
+        if len(attn) > 0:
+            a = torch.stack(attn[::-1])
+        return hyp[::-1], a
 
 
 class GNMTGlobalScorer(object):

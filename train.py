@@ -2,6 +2,9 @@
 
 from __future__ import division
 
+import numpy
+print numpy.__path__
+
 import os
 import sys
 import argparse
@@ -15,6 +18,10 @@ import onmt.ModelConstructor
 import onmt.modules
 from onmt.Utils import aeq, use_gpu
 import opts
+
+print torch.cuda.is_available()
+print cuda.device_count()
+print cuda.current_device()
 
 parser = argparse.ArgumentParser(
     description='train.py',
@@ -101,7 +108,7 @@ def make_train_data_iter(train_data, opt):
     return onmt.IO.OrderedIterator(
                 dataset=train_data, batch_size=opt.batch_size,
                 device=opt.gpuid[0] if opt.gpuid else -1,
-                repeat=False)
+                repeat=False, dropout=0.1, shuffleK=3)
 
 
 def make_valid_data_iter(valid_data, opt):

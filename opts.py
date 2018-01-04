@@ -13,9 +13,9 @@ def model_opts(parser):
     # Embedding Options
     parser.add_argument('-word_vec_size', type=int, default=-1,
                         help='Word embedding for both.')
-    parser.add_argument('-src_word_vec_size', type=int, default=500,
+    parser.add_argument('-src_word_vec_size', type=int, default=300,
                         help='Src word embedding sizes')
-    parser.add_argument('-tgt_word_vec_size', type=int, default=500,
+    parser.add_argument('-tgt_word_vec_size', type=int, default=300,
                         help='Tgt word embedding sizes')
 
     parser.add_argument('-feat_merge', type=str, default='concat',
@@ -51,6 +51,8 @@ def model_opts(parser):
                         help='Number of layers in the encoder')
     parser.add_argument('-dec_layers', type=int, default=2,
                         help='Number of layers in the decoder')
+    parser.add_argument('-discrim_layers', type=int, default=3,
+                        help='Number of layers in the discriminator')
 
     parser.add_argument('-cnn_kernel_width', type=int, default=3,
                         help="""Size of windows in the cnn, the kernel_size is
@@ -58,6 +60,8 @@ def model_opts(parser):
 
     parser.add_argument('-rnn_size', type=int, default=500,
                         help='Size of LSTM hidden states')
+    parser.add_argument('-discrim_size', type=int, default=1024,
+                        help='Size of discriminator hidden states')
     parser.add_argument('-input_feed', type=int, default=1,
                         help="""Feed the context vector at each time step as
                         additional input (via concatenation with the word
@@ -83,7 +87,7 @@ def model_opts(parser):
 
     # Attention options
     parser.add_argument('-global_attention', type=str, default='general',
-                        choices=['dot', 'general', 'mlp'],
+                        choices=['dot', 'general', 'mlp', 'none'],
                         help="""The attention type to use:
                         dotprot or general (Luong) or MLP (Bahdanau)""")
 
@@ -225,9 +229,9 @@ def train_opts(parser):
 
 
 def translate_opts(parser):
-    parser.add_argument('-model', required=True,
+    parser.add_argument('-model', #required=True,
                         help='Path to model .pt file')
-    parser.add_argument('-src',   required=True,
+    parser.add_argument('-src',   #required=True,
                         help="""Source sequence to decode (one line per
                         sequence)""")
     parser.add_argument('-src_img_dir',   default="",
@@ -260,7 +264,7 @@ def translate_opts(parser):
     parser.add_argument('-n_best', type=int, default=1,
                         help="""If verbose is set, will output the n_best
                         decoded sentences""")
-    parser.add_argument('-gpu', type=int, default=-1,
+    parser.add_argument('-gpu', type=int, default=0,
                         help="Device to run on")
     # Options most relevant to summarization.
     parser.add_argument('-dynamic_dict', action='store_true',

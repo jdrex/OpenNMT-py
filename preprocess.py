@@ -72,6 +72,11 @@ def main():
     print("Building Vocab...")
     onmt.IO.build_vocab(train, opt)
 
+    print fields['src'].vocab.stoi['roger']
+    print fields['src'].vocab.stoi['Roger']
+    print fields['tgt'].vocab.stoi['roger']
+    print fields['tgt'].vocab.stoi['Roger']
+    
     print("Building Valid...")
     valid = onmt.IO.ONMTDataset(
         opt.valid_src, opt.valid_tgt, fields,

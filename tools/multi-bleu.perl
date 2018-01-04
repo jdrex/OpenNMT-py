@@ -55,6 +55,9 @@ sub add_to_ref {
 }
 
 my(@CORRECT,@TOTAL,$length_translation,$length_reference);
+for(my $n=1;$n<=4;$n++) {
+    $CORRECT[$n] = 0;
+}
 my $s=0;
 while(<STDIN>) {
     chop;

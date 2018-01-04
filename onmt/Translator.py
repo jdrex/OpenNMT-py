@@ -33,6 +33,19 @@ class Translator(object):
         # for debugging
         self.beam_accum = None
 
+    def __init_mine__(self, opt, model_opt, fields, model):
+        # Add in default model arguments, possibly added since training.
+        self.opt = opt
+        self.fields = fields
+
+        self._type = model_opt.encoder_type
+        self.copy_attn = model_opt.copy_attn
+
+        self.model = model
+
+        # for debugging
+        self.beam_accum = None
+
     def initBeamAccum(self):
         self.beam_accum = {
             "predicted_ids": [],
@@ -106,7 +119,7 @@ class Translator(object):
         # Repeat everything beam_size times.
         context = rvar(context.data)
         src = rvar(src.data)
-        srcMap = rvar(batch.src_map.data)
+        srcMap = None #rvar(batch.src_map.data)
         decStates.repeat_beam_size_times(beam_size)
         scorer = None
         # scorer=onmt.GNMTGlobalScorer(0.3, 0.4)
@@ -168,7 +181,10 @@ class Translator(object):
 
             # (c) Advance each beam.
             for j, b in enumerate(beam):
-                b.advance(out[:, j],  unbottle(attn["std"]).data[:, j])
+                a = None
+                if attn is not None:
+                    a = unbottle(attn["std"]).data[:, j]
+                b.advance(out[:, j],  a)
                 decStates.beam_update(j, b.getCurrentOrigin(), beam_size)
 
         if "tgt" in batch.__dict__:
@@ -193,6 +209,9 @@ class Translator(object):
         return allHyps, allScores, allAttn, allGold
 
     def translate(self, batch, data):
+        self.model.eval()
+        self.model.generator.eval()
+
         #  (1) convert words to indexes
         batch_size = batch.batch_size
 
