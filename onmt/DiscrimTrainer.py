@@ -65,27 +65,27 @@ class DiscrimTrainer(object):
         for i in range(nBatches):
             # SRC
             batch = src_batches[i]
-            _, src_lengths = batch.src
-
-            src = onmt.IO.make_features(batch, 'src')
-            #src_lengths, src = self.add_noise(src_lengths, src)
-
-            report_stats.n_src_words += src_lengths.sum()
-
+            
+            src = onmt.io.make_features(batch, 'src', 'audio')
+            src_labels = src.squeeze().sum(1)[:, 0:-1:8].data.cpu().numpy()
+            #print src.size(), src_labels.shape
+            
             self.src_model.zero_grad()
-            outputs = self.src_model(src, src_lengths)
+            outputs = self.src_model(src, None)
             l = [self.src_label]*outputs.size()[0]
             labels = Variable(torch.cuda.FloatTensor(l).view(-1,1))
-            weights = torch.cuda.FloatTensor(src.size()[0], src.size()[1]).zero_()
-            for j in range(len(src_lengths)):
-                weights[:src_lengths[j], j] = 1.
+            w = np.zeros(src_labels.shape)
+            w[src_labels != 0.] = 1.
+            weights = torch.cuda.FloatTensor(w)
+            #print src_labels.shape, w.shape, weights.size()
             self.criterion.weight = weights.view(-1,1)[:outputs.size()[0], :]
 
+            #print outputs.size(), labels.size()
             loss = self.criterion(outputs, labels)
             loss.backward()
-            if i % 10 == 0:
-                print "discriminator", i, self.src_label
-                print outputs.data[0:5], loss.data[0]
+            #if i % 10 == 0:
+            #    print "discriminator", i, self.src_label
+            #    print outputs.data[0:5], loss.data[0]
             
             total_stats.update_loss(loss.data[0])
             report_stats.update_loss(loss.data[0])
@@ -103,7 +103,7 @@ class DiscrimTrainer(object):
             batch = tgt_batches[i]
             _, src_lengths = batch.src
 
-            src = onmt.IO.make_features(batch, 'src')
+            src = onmt.io.make_features(batch, 'src')
             #src_lengths, src = self.add_noise(src_lengths, src)
 
             report_stats.n_src_words += src_lengths.sum()
@@ -117,11 +117,12 @@ class DiscrimTrainer(object):
                 weights[:src_lengths[j], j] = 1.
             self.criterion.weight = weights.view(-1,1)[:outputs.size()[0], :]
 
+            #print outputs.size(), labels.size()
             loss = self.criterion(outputs, labels)
             loss.backward()
-            if i % 10 == 0:
-                print "discriminator", i, self.tgt_label
-                print outputs.data[0:5], loss.data[0]
+            #if i % 10 == 0:
+            #    print "discriminator", i, self.tgt_label
+            #    print outputs.data[0:5], loss.data[0]
             
             total_stats.update_loss(loss.data[0])
             report_stats.update_loss(loss.data[0])
@@ -162,8 +163,8 @@ class DiscrimTrainer(object):
         s_l_n = s_l_n[sort_order]
         s_n = s_n[:, sort_order]
 
-        src_lengths = torch.cuda.LongTensor(s_l_n)
-        src = Variable(torch.cuda.LongTensor(s_n))
+        src_lengths = torch.LongTensor(s_l_n)
+        src = Variable(torch.LongTensor(s_n))
 
         src_lengths.cuda()
         src.cuda()
@@ -176,27 +177,31 @@ class DiscrimTrainer(object):
 
     def drop_checkpoint(self, opt, epoch, fields, valid_stats):
         """ Called conditionally each epoch to save a snapshot. """
-        real_model = (self.model.module
-                      if isinstance(self.model, nn.DataParallel)
-                      else self.model)
-        real_generator = (real_model.generator.module
-                          if isinstance(real_model.generator, nn.DataParallel)
-                          else real_model.generator)
+        real_src_model = (self.src_model.module
+                      if isinstance(self.src_model, nn.DataParallel)
+                      else self.src_model)
 
-        model_state_dict = real_model.state_dict()
-        model_state_dict = {k: v for k, v in model_state_dict.items()
+        src_model_state_dict = real_src_model.state_dict()
+        src_model_state_dict = {k: v for k, v in src_model_state_dict.items()
                             if 'generator' not in k}
-        generator_state_dict = real_generator.state_dict()
+
+        real_tgt_model = (self.tgt_model.module
+                      if isinstance(self.tgt_model, nn.DataParallel)
+                      else self.tgt_model)
+
+        tgt_model_state_dict = real_tgt_model.state_dict()
+        tgt_model_state_dict = {k: v for k, v in tgt_model_state_dict.items()
+                            if 'generator' not in k}
         checkpoint = {
-            'model': model_state_dict,
-            'generator': generator_state_dict,
-            'vocab': onmt.IO.save_vocab(fields),
+            'src_model': src_model_state_dict,
+            'tgt_model': tgt_model_state_dict,
             'opt': opt,
             'epoch': epoch,
-            'optim': self.optim
+            'src_optim': self.src_optim,
+            'tgt_optim': self.tgt_optim
         }
         torch.save(checkpoint,
-                   '%s_acc_%.2f_ppl_%.2f_e%d.pt'
+                   '%s_acc_%.2f_ppl_%.2f_e%d.pt.disc'
                    % (opt.save_model, valid_stats.accuracy(),
                       valid_stats.ppl(), epoch))
 
@@ -230,7 +235,7 @@ class DoubleDiscrimTrainer(object):
 
             _, src_lengths = batch.src
 
-            src = onmt.IO.make_features(batch, 'src')
+            src = onmt.io.make_features(batch, 'src')
 
             #src_lengths, src = self.add_noise(src_lengths, src)
 
@@ -332,7 +337,7 @@ class DoubleDiscrimTrainer(object):
         checkpoint = {
             'model': model_state_dict,
             'generator': generator_state_dict,
-            'vocab': onmt.IO.save_vocab(fields),
+            'vocab': onmt.io.save_vocab(fields),
             'opt': opt,
             'epoch': epoch,
             'optim': self.optim

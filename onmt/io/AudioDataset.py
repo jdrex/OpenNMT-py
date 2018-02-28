@@ -58,7 +58,10 @@ class AudioDataset(ONMTDatasetBase):
         # Peek at the first to see which fields are used.
         ex, examples_iter = self._peek(examples_iter)
         keys = ex.keys()
-
+        print "audio dataset keys:", keys
+        print ex["tgt"]
+        print ex["src_name"]
+        
         out_fields = [(k, fields[k]) if k in fields else (k, None)
                       for k in keys]
         example_values = ([ex[k] for k in keys] for ex in examples_iter)
@@ -106,13 +109,56 @@ class AudioDataset(ONMTDatasetBase):
         Returns:
             (example_dict iterator, num_feats) tuple
         """
-        examples_iter = AudioDataset.read_audio_file(
-                path, audio_dir, "src", sample_rate,
-                window_size, window_stride, window,
-                normalize_audio, truncate)
+        examples_iter = AudioDataset.read_kaldi_audio(
+            path, "src", normalize_audio, truncate)
+                #path, audio_dir, "src", sample_rate,
+                #window_size, window_stride, window,
+                #normalize_audio, truncate)
         num_feats = 0  # Source side(audio) has no features.
 
         return (examples_iter, num_feats)
+
+    @staticmethod
+    def read_kaldi_audio(path, side, normalize_audio, truncate=None):
+        """
+        Args:
+            path (str): rspecifier for kaldi scp or ark file with audio features
+            side (str): 'src' or 'tgt'.
+            window (str): window type for spectrogram generation.
+            normalize_audio (bool): subtract spectrogram by mean and divide
+                by std or not.
+
+        Yields:
+            a dictionary containing audio data for each line.
+        """
+        import numpy as np
+        import kaldi_io
+        feat_reader = kaldi_io.SequentialBaseFloatMatrixReader(path)
+
+        index = 0
+        for name, feats in feat_reader:
+            # nFrames x nFeats
+            print name, feats.shape
+            feats = feats[:feats.shape[0]-(feats.shape[0] % 8), :]
+            print feats.shape
+            if truncate:
+                feats = feats[:truncate, :]
+
+            feats = torch.FloatTensor(np.transpose(feats))
+            if normalize_audio:
+                mean = feats.mean()
+                std = feats.std()
+                feats.add_(-mean)
+                feats.div_(std)
+
+            example_dict = {side: feats,
+                side + '_name': name,
+                'indices': index}
+            index += 1
+            if index % 100 == 0:
+                print index
+                
+            yield example_dict
 
     @staticmethod
     def read_audio_file(path, src_dir, side, sample_rate, window_size,

@@ -11,10 +11,10 @@ import onmt.Models
 import onmt.modules
 from onmt.Models import NMTModel, MeanEncoder, RNNEncoder, \
                         StdRNNDecoder, InputFeedRNNDecoder, InputFeedRNNDecoderNoAttention, \
-                        DiscrimClassifier, DiscrimModel
+                        DiscrimClassifier, DiscrimModel, AudioDecoder, SpeechModel
 from onmt.modules import Embeddings, ImageEncoder, CopyGenerator, \
                          TransformerEncoder, TransformerDecoder, \
-                         CNNEncoder, CNNDecoder, AudioEncoder
+                         CNNEncoder, CNNDecoder, AudioEncoder, GlobalAudioEncoder
 from onmt.Utils import use_gpu
 
 
@@ -119,9 +119,14 @@ def make_decoder(opt, embeddings):
                              opt.dropout,
                              embeddings)
 
-def make_discriminators(opt, encoders, gpu):
-    classifier = DiscrimClassifier(opt.rnn_size, opt.discrim_size, opt.discrim_layers)
+def make_discriminators(opt, encoders, gpu, checkpoint):
+    classifier = DiscrimClassifier(opt.rnn_size*2, opt.discrim_size, opt.discrim_layers)
     models = [DiscrimModel(encoder, classifier) for encoder in encoders]
+
+    if checkpoint is not None:
+        print('Loading model parameters.')
+        models[0].load_state_dict(checkpoint['src_model'])
+        models[1].load_state_dict(checkpoint['tgt_model'])
 
     # Make the whole model leverage GPU if indicated to do so.
     if gpu:
@@ -149,6 +154,130 @@ def load_test_model(opt, dummy_opt):
     model.eval()
     model.generator.eval()
     return fields, model, model_opt
+
+def make_audio_text_model(model_opt, fields, text_fields, gpu, checkpoint=None):
+    model = make_base_model(model_opt, fields, gpu, checkpoint)
+    
+    src_dict = text_fields["src"].vocab
+    feature_dicts = onmt.io.collect_feature_vocabs(text_fields, 'src')
+    src_embeddings = make_embeddings(model_opt, src_dict, feature_dicts)
+    text_encoder = make_encoder(model_opt, src_embeddings)
+
+    generator = model.generator
+    
+    text_model = NMTModel(text_encoder, model.decoder)
+    text_model.model_type = 'text'
+    text_model.decoder.set_generator(None)
+    
+    global_speech_encoder = GlobalAudioEncoder(model_opt.enc_layers,
+                               model_opt.brnn,
+                               model_opt.rnn_size,
+                               model_opt.dropout,
+                               model_opt.sample_rate,
+                               model_opt.window_size)
+    
+    speech_decoder = AudioDecoder(model_opt.rnn_type, model_opt.brnn,
+                             model_opt.dec_layers, model_opt.rnn_size,
+                             model_opt.global_attention,
+                             model_opt.coverage_attn,
+                             model_opt.context_gate,
+                             model_opt.copy_attn,
+                             model_opt.dropout)
+    speech_model = SpeechModel(model.encoder, global_speech_encoder, speech_decoder)
+    
+    # Load the model states from checkpoint or initialize them.
+    if checkpoint is not None:
+        print('Loading model parameters.')
+        text_model.load_state_dict(checkpoint['text_model'])
+        if checkpoint.has_key('speech_model') and checkpoint['speech_model'] is not None:
+            print('  Loading speech model parameters')
+            speech_model.load_state_dict(checkpoint['speech_model'])
+    else:
+        if model_opt.param_init != 0.0:
+            print('Intializing model parameters.')
+            for p in text_model.parameters():
+                p.data.uniform_(-model_opt.param_init, model_opt.param_init)
+            for p in speech_model.parameters():
+                p.data.uniform_(-model_opt.param_init, model_opt.param_init)
+        if hasattr(text_model.encoder, 'embeddings'):
+            text_model.encoder.embeddings.load_pretrained_vectors(
+                    model_opt.pre_word_vecs_enc, model_opt.fix_word_vecs_enc)
+
+    # Add generator to model (this registers it as parameter of model).
+    text_model.decoder.set_generator(generator)
+    text_model.generator = generator
+
+    # Make the whole model leverage GPU if indicated to do so.
+    if gpu:
+        text_model.cuda()
+        speech_model.cuda()
+    else:
+        text_model.cpu()
+        speech_model.cpu()
+
+    return model, text_model, speech_model
+
+def make_audio_text_model_from_text(model_opt, fields, text_fields, gpu, checkpoint=None):
+    model = make_base_model(model_opt, fields, gpu, None)
+    
+    src_dict = text_fields["src"].vocab
+    feature_dicts = onmt.io.collect_feature_vocabs(text_fields, 'src')
+    src_embeddings = make_embeddings(model_opt, src_dict, feature_dicts)
+    text_encoder = make_encoder(model_opt, src_embeddings)
+
+    generator = model.generator
+    
+    text_model = NMTModel(text_encoder, model.decoder)
+    text_model.model_type = 'text'
+    text_model.decoder.set_generator(None)
+    
+    global_speech_encoder = GlobalAudioEncoder(model_opt.enc_layers,
+                               model_opt.brnn,
+                               model_opt.rnn_size,
+                               model_opt.dropout,
+                               model_opt.sample_rate,
+                               model_opt.window_size)
+    
+    speech_decoder = AudioDecoder(model_opt.rnn_type, model_opt.brnn,
+                             model_opt.dec_layers, model_opt.rnn_size,
+                             model_opt.global_attention,
+                             model_opt.coverage_attn,
+                             model_opt.context_gate,
+                             model_opt.copy_attn,
+                             model_opt.dropout)
+    speech_model = SpeechModel(model.encoder, global_speech_encoder, speech_decoder)
+    
+    # Load the model states from checkpoint or initialize them.
+    if checkpoint is not None:
+        print('Loading model parameters.')
+        text_model.load_state_dict(checkpoint['model'])
+        if checkpoint.has_key('speech_model') and checkpoint['speech_model'] is not None:
+            print('  Loading speech model parameters')
+            speech_model.load_state_dict(checkpoint['speech_model'])
+    else:
+        if model_opt.param_init != 0.0:
+            print('Intializing model parameters.')
+            for p in text_model.parameters():
+                p.data.uniform_(-model_opt.param_init, model_opt.param_init)
+            for p in speech_model.parameters():
+                p.data.uniform_(-model_opt.param_init, model_opt.param_init)
+        if hasattr(text_model.encoder, 'embeddings'):
+            text_model.encoder.embeddings.load_pretrained_vectors(
+                    model_opt.pre_word_vecs_enc, model_opt.fix_word_vecs_enc)
+
+    # Add generator to model (this registers it as parameter of model).
+    text_model.decoder.set_generator(generator)
+    text_model.generator = generator
+
+    # Make the whole model leverage GPU if indicated to do so.
+    if gpu:
+        text_model.cuda()
+        speech_model.cuda()
+    else:
+        text_model.cpu()
+        speech_model.cpu()
+
+    return model, text_model, speech_model
 
 
 def make_base_model(model_opt, fields, gpu, checkpoint=None):
@@ -206,15 +335,19 @@ def make_base_model(model_opt, fields, gpu, checkpoint=None):
     model = NMTModel(encoder, decoder)
     model.model_type = model_opt.model_type
 
+    gen_in_size = model_opt.rnn_size
+    if model_opt.brnn:
+        gen_in_size = gen_in_size*2
+        
     # Make Generator.
     if not model_opt.copy_attn:
         generator = nn.Sequential(
-            nn.Linear(model_opt.rnn_size, len(fields["tgt"].vocab)),
+            nn.Linear(gen_in_size, len(fields["tgt"].vocab)),
             nn.LogSoftmax())
         if model_opt.share_decoder_embeddings:
             generator[0].weight = decoder.embeddings.word_lut.weight
     else:
-        generator = CopyGenerator(model_opt.rnn_size,
+        generator = CopyGenerator(gen_in_size,
                                   fields["tgt"].vocab)
 
     # Load the model states from checkpoint or initialize them.
@@ -236,6 +369,8 @@ def make_base_model(model_opt, fields, gpu, checkpoint=None):
             model.decoder.embeddings.load_pretrained_vectors(
                     model_opt.pre_word_vecs_dec, model_opt.fix_word_vecs_dec)
 
+    decoder.set_generator(generator)
+    
     # Add generator to model (this registers it as parameter of model).
     model.generator = generator
 

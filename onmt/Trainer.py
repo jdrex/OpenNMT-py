@@ -91,8 +91,7 @@ class Statistics(object):
         experiment.add_scalar_value(prefix + "_accuracy", self.accuracy())
         experiment.add_scalar_value(prefix + "_tgtper",  self.n_words / t)
         experiment.add_scalar_value(prefix + "_lr", lr)
-
-
+                                   
 class Trainer(object):
     """
     Class that controls the training process.
@@ -305,6 +304,805 @@ class Trainer(object):
         return '%s_acc_%.2f_ppl_%.2f_e%d.pt' % (opt.save_model, valid_stats.accuracy(),
                       valid_stats.ppl(), epoch)
 
+class AudioTextTrainer(Trainer):
+    """
+    Class that controls the training process.
+
+    Args:
+            model(:py:class:`onmt.Model.NMTModel`): translation model to train
+            train_iter: training data iterator
+            valid_iter: validate data iterator
+            train_loss(:obj:`onmt.Loss.LossComputeBase`):
+               training loss computation
+            valid_loss(:obj:`onmt.Loss.LossComputeBase`):
+               training loss computation
+            optim(:obj:`onmt.Optim.Optim`):
+               the optimizer responsible for update
+            trunc_size(int): length of truncated back propagation through time
+            shard_size(int): compute loss in shards of this size for efficiency
+            data_type(string): type of the source input: [text|img|audio]
+    """
+
+    def __init__(self, model, train_iter, valid_iter,
+                 text_model, text_train_iter, text_valid_iter,
+                 train_loss, valid_loss, optim,
+                 trunc_size=0, shard_size=32, data_type='text', mult=1):
+        # Basic attributes.
+        self.model = model
+        self.train_iter = train_iter
+        self.valid_iter = valid_iter
+
+        self.text_model = text_model
+        self.text_train_iter = text_train_iter
+        self.text_valid_iter = text_valid_iter
+        
+        self.train_loss = train_loss
+        self.valid_loss = valid_loss
+        self.optim = optim
+        self.trunc_size = trunc_size
+        self.shard_size = shard_size
+        self.data_type = data_type
+
+        self.mult = mult
+        # Set model in training mode.
+        self.model.train()
+
+    def train(self, epoch, report_func=None):
+        """ Train next epoch.
+        Args:
+            epoch(int): the epoch number
+            report_func(fn): function for logging
+
+        Returns:
+            stats (:obj:`onmt.Statistics`): epoch loss statistics
+        """
+        total_stats = Statistics()
+        report_stats = Statistics()
+        text_total_stats = Statistics()
+
+        asr_batches = [s for s in self.train_iter]
+        text_batches = [t for t in self.text_train_iter]
+        
+        nBatches = len(asr_batches)
+        multiplier = self.mult #int(len(text_batches)/nBatches)
+
+        #print "nBatches:", nBatches
+        #print "mult:", multiplier
+        
+        for i in range(nBatches):
+            #print i
+            self.process_batch(asr_batches[i], self.model, "audio", report_stats, total_stats)
+            for j in range(multiplier):
+                #print j
+                try:
+                    self.process_batch(text_batches[i*multiplier+j], self.text_model, "text", report_stats, text_total_stats)
+                except:
+                    print "out of range:", len(text_batches), i*multiplier+j
+                
+            if report_func is not None:
+                report_stats = report_func(
+                    epoch, i, nBatches,
+                    total_stats.start_time, self.optim.lr, report_stats)
+
+        return total_stats, text_total_stats
+
+    def process_batch(self, batch, model, data_type, report_stats, total_stats):
+        target_size = batch.tgt.size(0)
+        # Truncated BPTT
+        trunc_size = self.trunc_size if self.trunc_size else target_size
+
+        dec_state = None
+        src = onmt.io.make_features(batch, 'src', data_type)
+        if data_type == 'text':
+            _, src_lengths = batch.src
+            report_stats.n_src_words += src_lengths.sum()
+        else:
+            src_lengths = None
+
+        tgt_outer = onmt.io.make_features(batch, 'tgt')
+
+        for j in range(0, target_size-1, trunc_size):
+            # 1. Create truncated target.
+            tgt = tgt_outer[j: j + trunc_size]
+
+            # 2. F-prop all but generator.
+            model.zero_grad()
+            outputs, attns, dec_state = model(src, tgt, src_lengths, dec_state)
+
+            # 3. Compute loss in shards for memory efficiency.
+            batch_stats = self.train_loss.sharded_compute_loss(
+                batch, outputs, attns, j,
+                trunc_size, self.shard_size)
+
+            # 4. Update the parameters and statistics.
+            self.optim.step()
+            total_stats.update(batch_stats)
+            report_stats.update(batch_stats)
+
+            # If truncated, don't backprop fully.
+            if dec_state is not None:
+                dec_state.detach()
+
+        model.zero_grad()
+        return report_stats, total_stats
+
+    def validate(self):
+        """ Validate model.
+
+        Returns:
+            :obj:`onmt.Statistics`: validation loss statistics
+        """
+        # Set model in validating mode.
+        self.model.eval()
+
+        stats = Statistics()
+
+        for batch in self.valid_iter:
+            src = onmt.io.make_features(batch, 'src', self.data_type)
+            if self.data_type == 'text':
+                _, src_lengths = batch.src
+            else:
+                src_lengths = None
+
+            tgt = onmt.io.make_features(batch, 'tgt')
+
+            # F-prop through the model.
+            outputs, attns, _ = self.model(src, tgt, src_lengths)
+
+            # Compute loss.
+            batch_stats = self.valid_loss.monolithic_compute_loss(
+                    batch, outputs, attns)
+
+            # Update statistics.
+            stats.update(batch_stats)
+
+        # Set model back to training mode.
+        self.model.train()
+
+        return stats
+
+    def drop_checkpoint(self, opt, epoch, fields, valid_stats):
+        """ Save a resumable checkpoint.
+
+        Args:
+            opt (dict): option object
+            epoch (int): epoch number
+            fields (dict): fields and vocabulary
+            valid_stats : statistics of last validation run
+        """
+        real_model = (self.model.module
+                      if isinstance(self.model, nn.DataParallel)
+                      else self.model)
+        real_text_model = (self.text_model.module
+                      if isinstance(self.text_model, nn.DataParallel)
+                      else self.text_model)
+        real_generator = (real_model.generator.module
+                          if isinstance(real_model.generator, nn.DataParallel)
+                          else real_model.generator)
+
+        model_state_dict = real_model.state_dict()
+        model_state_dict = {k: v for k, v in model_state_dict.items()
+                            if 'generator' not in k}
+        text_model_state_dict = real_text_model.state_dict()
+        #text_model_state_dict = {k: v for k, v in text_model_state_dict.items()
+        #                    if 'generator' not in k}
+        generator_state_dict = real_generator.state_dict()
+        checkpoint = {
+            'model': model_state_dict,
+            'generator': generator_state_dict,
+            'vocab': onmt.io.save_fields_to_vocab(fields),
+            'opt': opt,
+            'epoch': epoch,
+            'optim': self.optim,
+            'text_model': text_model_state_dict,
+        }
+        torch.save(checkpoint,
+                   '%s_acc_%.2f_ppl_%.2f_e%d.pt'
+                   % (opt.save_model, valid_stats.accuracy(),
+                      valid_stats.ppl(), epoch))
+
+        return '%s_acc_%.2f_ppl_%.2f_e%d.pt' % (opt.save_model, valid_stats.accuracy(),
+                      valid_stats.ppl(), epoch)
+
+class AudioTextTrainerAdv(AudioTextTrainer):
+    """
+    Class that controls the training process.
+
+    Args:
+            model(:py:class:`onmt.Model.NMTModel`): translation model to train
+            train_iter: training data iterator
+            valid_iter: validate data iterator
+            train_loss(:obj:`onmt.Loss.LossComputeBase`):
+               training loss computation
+            valid_loss(:obj:`onmt.Loss.LossComputeBase`):
+               training loss computation
+            optim(:obj:`onmt.Optim.Optim`):
+               the optimizer responsible for update
+            trunc_size(int): length of truncated back propagation through time
+            shard_size(int): compute loss in shards of this size for efficiency
+            data_type(string): type of the source input: [text|img|audio]
+    """
+
+    def __init__(self, model, train_iter, valid_iter,
+                 text_model, text_train_iter, text_valid_iter,
+                 train_loss, text_loss, valid_loss, optim,
+                 discrim_models, labels, gen_lambda=1., 
+                 trunc_size=0, shard_size=32, data_type='text', mult=1):
+        # Basic attributes.
+        self.model = model
+        self.train_iter = train_iter
+        self.valid_iter = valid_iter
+
+        self.text_model = text_model
+        self.text_train_iter = text_train_iter
+        self.text_valid_iter = text_valid_iter
+        
+        self.train_loss = train_loss
+        self.text_loss = text_loss
+        self.valid_loss = valid_loss
+        self.optim = optim
+
+        self.discrim_models = discrim_models
+        self.labels = labels
+        
+        self.trunc_size = trunc_size
+        self.shard_size = shard_size
+        self.data_type = data_type
+
+        self.criterion = nn.BCEWithLogitsLoss() #CrossEntropyLoss()
+
+        # Set model in training mode.
+        self.model.train()
+        self.discrim_models[0].train()
+        self.discrim_models[1].train()
+
+        self.mult = mult
+        self.gen_lambda = gen_lambda
+        
+    def train(self, epoch, report_func=None):
+        """ Train next epoch.
+        Args:
+            epoch(int): the epoch number
+            report_func(fn): function for logging
+
+        Returns:
+            stats (:obj:`onmt.Statistics`): epoch loss statistics
+        """
+        total_stats = Statistics()
+        report_stats = Statistics()
+        text_total_stats = Statistics()
+
+        asr_batches = [s for s in self.train_iter]
+        text_batches = [t for t in self.text_train_iter]
+        
+        nBatches = len(asr_batches)
+        multiplier = self.mult #int(len(text_batches)/nBatches)
+
+        #print "nBatches:", nBatches
+        #print "mult:", multiplier
+        
+        for i in range(nBatches):
+            #print i
+            self.process_batch(asr_batches[i], self.model, "audio", self.discrim_models[0], self.labels[0], report_stats, total_stats)
+            for j in range(multiplier):
+                #print j
+                try:
+                    self.process_batch(text_batches[i*multiplier+j], self.text_model, "text",  self.discrim_models[1], self.labels[1], report_stats, text_total_stats)
+                except:
+                    print len(text_batches), i*multiplier+j
+                
+            if report_func is not None:
+                report_stats = report_func(
+                    epoch, i, nBatches,
+                    total_stats.start_time, self.optim.lr, report_stats)
+
+        return total_stats, text_total_stats
+
+    def process_batch(self, batch, model, data_type, discrim_model, label, report_stats, total_stats):
+        target_size = batch.tgt.size(0)
+        # Truncated BPTT
+        trunc_size = self.trunc_size if self.trunc_size else target_size
+
+        dec_state = None
+        src = onmt.io.make_features(batch, 'src', data_type)
+        if data_type == 'text':
+            _, src_lengths = batch.src
+            report_stats.n_src_words += src_lengths.sum()
+            loss = self.text_loss
+        else:
+            src_lengths = None
+            loss = self.train_loss
+
+        tgt_outer = onmt.io.make_features(batch, 'tgt')
+
+        for j in range(0, target_size-1, trunc_size):
+            # 1. Create truncated target.
+            tgt = tgt_outer[j: j + trunc_size]
+
+            # 2. F-prop all but generator.
+            model.zero_grad()
+            outputs, attns, dec_state = model(src, tgt, src_lengths, dec_state)
+
+            # 3. Compute loss in shards for memory efficiency.
+            batch_stats = loss.sharded_compute_loss(
+                batch, outputs, attns, j,
+                trunc_size, self.shard_size)
+
+            # 4. Update the parameters and statistics.
+            self.optim.step()
+            total_stats.update(batch_stats)
+            report_stats.update(batch_stats)
+
+            # If truncated, don't backprop fully.
+            if dec_state is not None:
+                dec_state.detach()
+
+        model.zero_grad()
+        discrim_model.zero_grad()
+        outputs = discrim_model(src, src_lengths)
+        l = [label]*outputs.size()[0]
+        labels = Variable(torch.cuda.FloatTensor(l).view(-1,1))
+        if src_lengths is not None:
+            weights = torch.cuda.FloatTensor(src.size()[0], src.size()[1]).zero_()
+            for j in range(len(src_lengths)):
+                weights[:src_lengths[j], j] = self.gen_lambda
+        else:
+            src_labels = src.squeeze().sum(1)[:, 0:-1:8].data.cpu().numpy()
+            w = np.zeros(src_labels.shape)
+            w[src_labels != 0.] = self.gen_lambda
+            weights = torch.cuda.FloatTensor(w)
+
+        self.criterion.weight = weights.view(-1,1)[:outputs.size()[0], :]
+
+        loss = self.criterion(outputs, labels)
+        loss.backward()
+        #total_stats.update_loss(loss.data[0])
+        #report_stats.update_loss(loss.data[0])
+
+        # 4. Update the parameters and statistics.
+        self.optim.step()
+
+        model.zero_grad()
+        discrim_model.zero_grad()
+        
+        return report_stats, total_stats
+
+    def validate(self):
+        """ Validate model.
+
+        Returns:
+            :obj:`onmt.Statistics`: validation loss statistics
+        """
+        # Set model in validating mode.
+        self.model.eval()
+
+        stats = Statistics()
+
+        for batch in self.valid_iter:
+            src = onmt.io.make_features(batch, 'src', self.data_type)
+            if self.data_type == 'text':
+                _, src_lengths = batch.src
+            else:
+                src_lengths = None
+
+            tgt = onmt.io.make_features(batch, 'tgt')
+
+            # F-prop through the model.
+            outputs, attns, _ = self.model(src, tgt, src_lengths)
+
+            # Compute loss.
+            batch_stats = self.valid_loss.monolithic_compute_loss(
+                    batch, outputs, attns)
+
+            # Update statistics.
+            stats.update(batch_stats)
+
+        # Set model back to training mode.
+        self.model.train()
+
+        return stats
+
+    def drop_checkpoint(self, opt, epoch, fields, valid_stats):
+        """ Save a resumable checkpoint.
+
+        Args:
+            opt (dict): option object
+            epoch (int): epoch number
+            fields (dict): fields and vocabulary
+            valid_stats : statistics of last validation run
+        """
+        real_model = (self.model.module
+                      if isinstance(self.model, nn.DataParallel)
+                      else self.model)
+        real_generator = (real_model.generator.module
+                          if isinstance(real_model.generator, nn.DataParallel)
+                          else real_model.generator)
+
+        model_state_dict = real_model.state_dict()
+        model_state_dict = {k: v for k, v in model_state_dict.items()
+                            if 'generator' not in k}
+        generator_state_dict = real_generator.state_dict()
+
+        # text model
+        real_text_model = (self.text_model.module
+                      if isinstance(self.text_model, nn.DataParallel)
+                      else self.text_model)
+        text_model_state_dict = real_text_model.state_dict()
+        text_model_state_dict = {k: v for k, v in text_model_state_dict.items()
+                            if 'generator' not in k}
+
+        checkpoint = {
+            'model': model_state_dict,
+            'text_model': text_model_state_dict,
+            'generator': generator_state_dict,
+            'vocab': onmt.io.save_fields_to_vocab(fields),
+            'opt': opt,
+            'epoch': epoch,
+            'optim': self.optim,
+        }
+        torch.save(checkpoint,
+                   '%s_acc_%.2f_ppl_%.2f_e%d.pt'
+                   % (opt.save_model, valid_stats.accuracy(),
+                      valid_stats.ppl(), epoch))
+
+        return '%s_acc_%.2f_ppl_%.2f_e%d.pt' % (opt.save_model, valid_stats.accuracy(),
+                      valid_stats.ppl(), epoch)
+
+class AudioTextSpeechTrainerAdv(AudioTextTrainer):
+    """
+    Class that controls the training process.
+
+    Args:
+            model(:py:class:`onmt.Model.NMTModel`): translation model to train
+            train_iter: training data iterator
+            valid_iter: validate data iterator
+            train_loss(:obj:`onmt.Loss.LossComputeBase`):
+               training loss computation
+            valid_loss(:obj:`onmt.Loss.LossComputeBase`):
+               training loss computation
+            optim(:obj:`onmt.Optim.Optim`):
+               the optimizer responsible for update
+            trunc_size(int): length of truncated back propagation through time
+            shard_size(int): compute loss in shards of this size for efficiency
+            data_type(string): type of the source input: [text|img|audio]
+    """
+
+    def __init__(self, model, train_iter, valid_iter,
+                 text_model, text_train_iter,
+                 speech_model, speech_train_iter, 
+                 train_loss, text_loss, valid_loss, optim,
+                 discrim_models, labels, gen_lambda=1., speech_lambda=1.,  
+                 trunc_size=0, shard_size=32, data_type='text',
+                 mult = 1, tMult = 1):
+        # Basic attributes.
+        self.model = model
+        self.train_iter = train_iter
+        self.valid_iter = valid_iter
+
+        self.text_model = text_model
+        self.text_train_iter = text_train_iter
+
+        self.speech_model = speech_model
+        self.speech_train_iter = speech_train_iter
+
+        self.train_loss = train_loss
+        self.text_loss = text_loss
+        self.valid_loss = valid_loss
+        self.optim = optim
+
+        self.discrim_models = discrim_models
+        self.labels = labels
+        
+        self.trunc_size = trunc_size
+        self.shard_size = shard_size
+        self.data_type = data_type
+
+        self.mult = mult
+        self.tMult = tMult
+        self.gen_lambda = gen_lambda
+        self.speech_lambda = speech_lambda
+        print "multipliers:", self.mult, self.tMult
+        
+        self.criterion = nn.BCEWithLogitsLoss() #CrossEntropyLoss()
+        self.speech_loss = nn.SmoothL1Loss()
+        
+        # Set model in training mode.
+        self.model.train()
+        self.discrim_models[0].train()
+        self.discrim_models[1].train()
+        
+    def train(self, epoch, report_func=None):
+        """ Train next epoch.
+        Args:
+            epoch(int): the epoch number
+            report_func(fn): function for logging
+
+        Returns:
+            stats (:obj:`onmt.Statistics`): epoch loss statistics
+        """
+        total_stats = Statistics()
+        report_stats = Statistics()
+        text_total_stats = Statistics()
+        speech_total_stats = Statistics()
+
+        asr_batches = [s for s in self.train_iter]
+        text_batches = [t for t in self.text_train_iter]
+        speech_batches = [t for t in self.speech_train_iter]
+        
+        nBatches = len(asr_batches)
+        #supBatches = min(len(text_batches), len(speech_batches))
+        multiplier = self.mult #int(supBatches/nBatches)
+        tMultiplier = self.tMult
+        #print "nBatches:", nBatches
+        #print "mult:", multiplier
+
+        print "tot speech:", len(speech_batches)
+        print "tot text:", len(text_batches)
+        for i in range(nBatches):
+            print "batch:", i
+            self.process_batch(asr_batches[i], self.model, "audio", None, self.labels[0], report_stats, total_stats)
+            for j in range(multiplier):
+                print " speech:", i*multiplier + j
+                try:
+                    self.process_speech(speech_batches[i*multiplier + j], self.speech_model, self.discrim_models[0], self.labels[0], speech_total_stats)
+                except:
+                    print "out of range"
+                for k in range(tMultiplier):
+                    print " text:", i*multiplier*tMultiplier + j*tMultiplier + k
+                    try:
+                        #self.process_batch(text_batches[i*multiplier + j*tMultiplier + k], self.text_model, "text",  None, self.labels[1], report_stats, text_total_stats)
+                        self.process_batch(text_batches[i*multiplier + j*tMultiplier + k], self.text_model, "text",  self.discrim_models[1], self.labels[1], report_stats, text_total_stats)
+                    except:
+                        print "out of range"
+                #self.process_speech(asr_batches[i], self.speech_model, self.discrim_models[0], self.labels[0], speech_total_stats)
+                
+            if report_func is not None:
+                report_stats = report_func(
+                    epoch, i, nBatches,
+                    total_stats.start_time, self.optim.lr, report_stats)
+
+        return total_stats, text_total_stats, speech_total_stats
+
+    def process_batch(self, batch, model, data_type, discrim_model, label, report_stats, total_stats):
+        target_size = batch.tgt.size(0)
+        # Truncated BPTT
+        trunc_size = self.trunc_size if self.trunc_size else target_size
+
+        dec_state = None
+        src = onmt.io.make_features(batch, 'src', data_type)
+        if data_type == 'text':
+            _, src_lengths = batch.src
+            report_stats.n_src_words += src_lengths.sum()
+            loss = self.text_loss
+        else:
+            src_lengths = None
+            loss = self.train_loss
+
+        tgt_outer = onmt.io.make_features(batch, 'tgt')
+
+        for j in range(0, target_size-1, trunc_size):
+            # 1. Create truncated target.
+            tgt = tgt_outer[j: j + trunc_size]
+
+            # 2. F-prop all but generator.
+            model.zero_grad()
+            outputs, attns, dec_state = model(src, tgt, src_lengths, dec_state)
+
+            # 3. Compute loss in shards for memory efficiency.
+            batch_stats = loss.sharded_compute_loss(
+                batch, outputs, attns, j,
+                trunc_size, self.shard_size)
+
+            # 4. Update the parameters and statistics.
+            self.optim.step()
+            total_stats.update(batch_stats)
+            report_stats.update(batch_stats)
+
+            # If truncated, don't backprop fully.
+            if dec_state is not None:
+                dec_state.detach()
+
+        model.zero_grad()
+        if discrim_model is None:
+            return report_stats, total_stats
+            
+        discrim_model.zero_grad()
+        outputs = discrim_model(src, src_lengths)
+        l = [label]*outputs.size()[0]
+        labels = Variable(torch.cuda.FloatTensor(l).view(-1,1))
+        if src_lengths is not None:
+            weights = torch.cuda.FloatTensor(src.size()[0], src.size()[1]).zero_()
+            for j in range(len(src_lengths)):
+                weights[:src_lengths[j], j] = self.gen_lambda
+        else:
+            src_labels = src.squeeze().sum(1)[:, 0:-1:8].data.cpu().numpy()
+            w = np.zeros(src_labels.shape)
+            w[src_labels != 0.] = self.gen_lambda
+            weights = torch.cuda.FloatTensor(w)
+
+        self.criterion.weight = weights.view(-1,1)[:outputs.size()[0], :]
+
+        loss = self.criterion(outputs, labels)
+        loss.backward()
+        #total_stats.update_loss(loss.data[0])
+        #report_stats.update_loss(loss.data[0])
+
+        # 4. Update the parameters and statistics.
+        self.optim.step()
+
+        model.zero_grad()
+        discrim_model.zero_grad()
+        
+        return report_stats, total_stats
+
+    def process_speech(self, batch, model, discrim_model, label, total_stats):
+        # Truncated BPTT
+        trunc_size = 200
+
+        dec_state = None
+        src = onmt.io.make_features(batch, 'src', "audio")[:, :, :, :1400]
+        src_lengths = None
+        target_size = src.size(-1)
+        #print batch.src.size(), target_size
+
+        if model is not None:
+            tgt_outer = onmt.io.make_features(batch, 'src', "audio")[:, :, :, :1400]
+            tgt_outer = tgt_outer.squeeze()
+            try:
+                tgt_outer = tgt_outer.transpose(0, 2).transpose(1, 2)
+            except:
+                tgt_outer = tgt_outer.view(1, tgt_outer.size(0), tgt_outer.size(1))
+                tgt_outer = tgt_outer.transpose(0, 2).transpose(1, 2)
+
+            for j in range(0, target_size-1, trunc_size):
+                if j > 1400:
+                    break
+                #print j
+                # 1. Create truncated target.
+                tgt = tgt_outer[j: j + trunc_size]
+                model.zero_grad()
+                outputs, attns, dec_state = model(src, tgt, src_lengths, dec_state)
+
+                src_labels = tgt.squeeze().sum(1).data.cpu().numpy()
+                w = np.zeros(src_labels.shape)
+                w[src_labels != 0.] = self.speech_lambda
+                weights = torch.cuda.FloatTensor(w)
+                self.speech_loss.weight = weights.view(-1,1)[:outputs.size()[0], :]
+
+                loss = self.speech_loss(outputs, tgt[1:, :, :])
+                loss.backward()
+                total_stats.update_loss(loss.data[0])
+
+                # 4. Update the parameters and statistics.
+                self.optim.step()
+    
+                # If truncated, don't backprop fully.
+                if dec_state is not None:
+                    dec_state.detach()
+
+                #print "starting adverserial"
+                model.zero_grad()
+                
+        discrim_model.zero_grad()
+        outputs = discrim_model(src, src_lengths)
+        l = [label]*outputs.size()[0]
+        labels = Variable(torch.cuda.FloatTensor(l).view(-1,1))
+        if src_lengths is not None:
+            weights = torch.cuda.FloatTensor(src.size()[0], src.size()[1]).zero_()
+            for j in range(len(src_lengths)):
+                weights[:src_lengths[j], j] = self.gen_lambda
+        else:
+            src_labels = src.squeeze().sum(1)[:, 0:-1:8].data.cpu().numpy()
+            w = np.zeros(src_labels.shape)
+            w[src_labels != 0.] = self.gen_lambda
+            weights = torch.cuda.FloatTensor(w)
+
+        self.criterion.weight = weights.view(-1,1)[:outputs.size()[0], :]
+
+        loss = self.criterion(outputs, labels)
+        loss.backward()
+
+        # 4. Update the parameters and statistics.
+        self.optim.step()
+
+        if model:
+            model.zero_grad()
+        discrim_model.zero_grad()
+        
+        return total_stats
+
+    def validate(self):
+        """ Validate model.
+
+        Returns:
+            :obj:`onmt.Statistics`: validation loss statistics
+        """
+        # Set model in validating mode.
+        self.model.eval()
+
+        stats = Statistics()
+
+        for batch in self.valid_iter:
+            src = onmt.io.make_features(batch, 'src', self.data_type)
+            if self.data_type == 'text':
+                _, src_lengths = batch.src
+            else:
+                src_lengths = None
+
+            tgt = onmt.io.make_features(batch, 'tgt')
+
+            # F-prop through the model.
+            outputs, attns, _ = self.model(src, tgt, src_lengths)
+
+            # Compute loss.
+            batch_stats = self.valid_loss.monolithic_compute_loss(
+                    batch, outputs, attns)
+
+            # Update statistics.
+            stats.update(batch_stats)
+
+        # Set model back to training mode.
+        self.model.train()
+
+        return stats
+
+    def drop_checkpoint(self, opt, epoch, fields, valid_stats):
+        """ Save a resumable checkpoint.
+
+        Args:
+            opt (dict): option object
+            epoch (int): epoch number
+            fields (dict): fields and vocabulary
+            valid_stats : statistics of last validation run
+        """
+        real_model = (self.model.module
+                      if isinstance(self.model, nn.DataParallel)
+                      else self.model)
+        real_generator = (real_model.generator.module
+                          if isinstance(real_model.generator, nn.DataParallel)
+                          else real_model.generator)
+
+        model_state_dict = real_model.state_dict()
+        model_state_dict = {k: v for k, v in model_state_dict.items()
+                            if 'generator' not in k}
+        generator_state_dict = real_generator.state_dict()
+
+        # text model
+        real_text_model = (self.text_model.module
+                      if isinstance(self.text_model, nn.DataParallel)
+                      else self.text_model)
+        text_model_state_dict = real_text_model.state_dict()
+        text_model_state_dict = {k: v for k, v in text_model_state_dict.items()
+                            if 'generator' not in k}
+        # speech model
+        if self.speech_model:
+            real_speech_model = (self.speech_model.module
+                                 if isinstance(self.speech_model, nn.DataParallel)
+                                 else self.speech_model)
+            speech_model_state_dict = real_speech_model.state_dict()
+            speech_model_state_dict = {k: v for k, v in speech_model_state_dict.items()
+                                       if 'generator' not in k}
+        else:
+            speech_model_state_dict = None
+
+        checkpoint = {
+            'model': model_state_dict,
+            'text_model': text_model_state_dict,
+            'speech_model': speech_model_state_dict,
+            'generator': generator_state_dict,
+            'vocab': onmt.io.save_fields_to_vocab(fields),
+            'opt': opt,
+            'epoch': epoch,
+            'optim': self.optim,
+        }
+        torch.save(checkpoint,
+                   '%s_acc_%.2f_ppl_%.2f_e%d.pt'
+                   % (opt.save_model, valid_stats.accuracy(),
+                      valid_stats.ppl(), epoch))
+
+        return '%s_acc_%.2f_ppl_%.2f_e%d.pt' % (opt.save_model, valid_stats.accuracy(),
+                      valid_stats.ppl(), epoch)
+
 class AdvTrainer(Trainer):
     def __init__(self, model, discrim_model, train_iter, valid_iter,
                  train_loss, valid_loss, optim, label, 
@@ -349,8 +1147,8 @@ class AdvTrainer(Trainer):
             dec_state = None
             _, src_lengths = batch.src
 
-            src = onmt.IO.make_features(batch, 'src')
-            tgt_outer = onmt.IO.make_features(batch, 'tgt')
+            src = onmt.io.make_features(batch, 'src')
+            tgt_outer = onmt.io.make_features(batch, 'tgt')
             report_stats.n_src_words += src_lengths.sum()
 
             for j in range(0, target_size-1, trunc_size):
@@ -382,6 +1180,17 @@ class AdvTrainer(Trainer):
             # loss re: true_label, backprop through discrim
             fake_l = [1-self.label]*outputs.size()[0]
             labels = Variable(torch.cuda.FloatTensor(fake_l).view(-1,1)) #Long for CELoss
+            if src_lengths is not None:
+                weights = torch.cuda.FloatTensor(src.size()[0], src.size()[1]).zero_()
+                for j in range(len(src_lengths)):
+                    weights[:src_lengths[j], j] = self.gen_lambda
+            else:
+                src_labels = src.squeeze().sum(1)[:, 0:-1:8].data.cpu().numpy()
+                w = np.zeros(src_labels.shape)
+                w[src_labels != 0.] = self.gen_lambda
+                weights = torch.cuda.FloatTensor(w)
+            
+            self.criterion.weight = weights.view(-1,1)[:outputs.size()[0], :]
 
             loss = self.criterion(outputs, labels)
             loss.backward()
@@ -410,8 +1219,8 @@ class AdvTrainer(Trainer):
 
         for batch in self.valid_iter:
             _, src_lengths = batch.src
-            src = onmt.IO.make_features(batch, 'src')
-            tgt = onmt.IO.make_features(batch, 'tgt')
+            src = onmt.io.make_features(batch, 'src')
+            tgt = onmt.io.make_features(batch, 'tgt')
 
             # F-prop through the model.
             outputs, attns, _ = self.model(src, tgt, src_lengths)
@@ -530,8 +1339,8 @@ class UnsupTrainer(Trainer):
         dec_state = None
         _, src_lengths = batch.src
 
-        src = onmt.IO.make_features(batch, 'src')
-        tgt_outer = onmt.IO.make_features(batch, 'tgt')
+        src = onmt.io.make_features(batch, 'src')
+        tgt_outer = onmt.io.make_features(batch, 'tgt')
 
         #src_lengths, src, tgt_outer = self.add_noise(src_lengths, src, tgt_outer)
         print "BATCH INPUT:", src.size()
@@ -566,7 +1375,7 @@ class UnsupTrainer(Trainer):
         # loss re: true_label, backprop through discrim
         fake_l = [1-label]*outputs.size()[0]
         labels = Variable(torch.cuda.FloatTensor(fake_l).view(-1,1)) #Long for CELoss
-        weights = torch.cuda.FloatTensor(src.size()[0], src.size()[1]).zero_()
+        weights = torch.FloatTensor(src.size()[0], src.size()[1]).zero_()
         for i in range(len(src_lengths)):
             weights[:src_lengths[i], i] = 1.
         self.criterion.weight = weights.view(-1,1)[:outputs.size()[0], :]
@@ -633,8 +1442,8 @@ class UnsupTrainer(Trainer):
 
         for batch in self.valid_iter:
             _, src_lengths = batch.src
-            src = onmt.IO.make_features(batch, 'src')
-            tgt = onmt.IO.make_features(batch, 'tgt')
+            src = onmt.io.make_features(batch, 'src')
+            tgt = onmt.io.make_features(batch, 'tgt')
 
             # F-prop through the model.
             outputs, attns, _ = self.model(src, tgt, src_lengths)

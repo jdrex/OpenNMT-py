@@ -21,6 +21,10 @@ import opts
 import argparse
 import glob
 
+print torch.cuda.is_available()
+print cuda.device_count()
+print cuda.current_device()
+
 parser = argparse.ArgumentParser(
     description='train.py',
     formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -147,14 +151,16 @@ def make_loss_compute(model, tgt_vocab, dataset, opt):
     return compute
 
 
-def train_model(model, train_dataset, valid_dataset,
-                fields, optim, model_opt):
+def train_model(model, train_dataset, valid_dataset, fields, 
+                text_model, text_train_dataset, text_valid_dataset, text_fields,
+                optim, model_opt):
 
-    print("making iters")
     train_iter = make_train_data_iter(train_dataset, opt)
     valid_iter = make_valid_data_iter(valid_dataset, opt)
 
-    print("making losses")
+    text_train_iter = make_train_data_iter(text_train_dataset, opt)
+    text_valid_iter = make_valid_data_iter(text_valid_dataset, opt)
+
     train_loss = make_loss_compute(model, fields["tgt"].vocab,
                                    train_dataset, opt)
     valid_loss = make_loss_compute(model, fields["tgt"].vocab,
@@ -164,19 +170,20 @@ def train_model(model, train_dataset, valid_dataset,
     shard_size = opt.max_generator_batches
     data_type = train_dataset.data_type
 
-    print("making trainer")
-    trainer = onmt.Trainer(model, train_iter, valid_iter,
+    trainer = onmt.AudioTextTrainer(model, train_iter, valid_iter,
+                           text_model, text_train_iter, text_valid_iter,
                            train_loss, valid_loss, optim,
-                           trunc_size, shard_size, data_type)
+                           trunc_size, shard_size, data_type, model_opt.mult)
 
-    print("made trainer")
     for epoch in range(opt.start_epoch, opt.epochs + 1):
         print('')
 
         # 1. Train for one epoch on the training set.
-        train_stats = trainer.train(epoch, report_func)
+        train_stats, text_train_stats = trainer.train(epoch, report_func)
         print('Train perplexity: %g' % train_stats.ppl())
         print('Train accuracy: %g' % train_stats.accuracy())
+        print('Text perplexity: %g' % text_train_stats.ppl())
+        print('Text accuracy: %g' % text_train_stats.accuracy())
 
         # 2. Validate on the validation set.
         valid_stats = trainer.validate()
@@ -217,11 +224,10 @@ def tally_parameters(model):
     print('decoder: ', dec)
 
 
-def load_dataset(data_type):
+def load_dataset(data_type, mode):
     assert data_type in ["train", "valid"]
 
     print("Loading %s data from '%s'" % (data_type, opt.data))
-
     pts = glob.glob(opt.data + '.' + data_type + '.[0-9]*.pt')
     if pts:
         # Multiple onmt.io.*Dataset's, coalesce all.
@@ -236,36 +242,48 @@ def load_dataset(data_type):
         dataset = onmt.io.ONMTDatasetBase.coalesce_datasets(datasets)
     else:
         # Only one onmt.io.*Dataset, simple!
-        dataset = torch.load(opt.data + '.' + data_type + '.pt')
+        if mode == "audio":
+            dataset = torch.load(opt.data + '.' + data_type + '.pt')
+        if mode == "text":
+            dataset = torch.load(opt.text_data + '.' + data_type + '.pt')
 
     print(' * number of %s sentences: %d' % (data_type, len(dataset)))
 
     return dataset
 
 
-def load_fields(train_dataset, valid_dataset, checkpoint):
+def load_fields(train_dataset, valid_dataset, checkpoint, mode="audio", tgt_fields=None):
     data_type = train_dataset.data_type
 
+    if mode == "audio":
+        data_path = opt.data
+    else:
+        data_path = opt.text_data
     fields = onmt.io.load_fields_from_vocab(
-                torch.load(opt.data + '.vocab.pt'), data_type)
+                torch.load(data_path + '.vocab.pt'), data_type)
     fields = dict([(k, f) for (k, f) in fields.items()
                   if k in train_dataset.examples[0].__dict__])
 
+    if tgt_fields:
+        fields['tgt'] = tgt_fields
+        
     # We save fields in vocab.pt, so assign them back to dataset here.
     train_dataset.fields = fields
     valid_dataset.fields = fields
 
-    if opt.train_from:
+    if opt.train_from and mode != "text":
         print('Loading vocab from checkpoint at %s.' % opt.train_from)
         fields = onmt.io.load_fields_from_vocab(
                     checkpoint['vocab'], data_type)
 
-    if data_type == 'text':
+    if data_type == 'text' or mode == 'text':
         print(' * vocabulary size. source = %d; target = %d' %
               (len(fields['src'].vocab), len(fields['tgt'].vocab)))
+        print(fields['tgt'].vocab.itos[0], fields['tgt'].vocab.itos[10])
     else:
         print(' * vocabulary size. target = %d' %
               (len(fields['tgt'].vocab)))
+        print(fields['tgt'].vocab.itos[0], fields['tgt'].vocab.itos[10])
 
     return fields
 
@@ -280,29 +298,29 @@ def collect_report_features(fields):
         print(' * tgt feature %d size = %d' % (j, len(fields[feat].vocab)))
 
 
-def build_model(model_opt, opt, fields, checkpoint):
+def build_model(model_opt, opt, fields, text_fields, checkpoint):
     print('Building model...')
-    model = onmt.ModelConstructor.make_base_model(model_opt, fields,
+    model, text_model, _ = onmt.ModelConstructor.make_audio_text_model(model_opt, fields, text_fields,
                                                   use_gpu(opt), checkpoint)
     if len(opt.gpuid) > 1:
         print('Multi gpu training: ', opt.gpuid)
         model = nn.DataParallel(model, device_ids=opt.gpuid, dim=1)
+        text_model = nn.DataParallel(text_model, device_ids=opt.gpuid, dim=1)
     print(model)
+    print
+    print(text_model)
 
-    return model
+    return model, text_model
 
 
-def build_optim(model, checkpoint):
+def build_optim(model, text_model, checkpoint):
     if opt.train_from:
-        #print('Loading optimizer from checkpoint.')
-        #print(checkpoint.keys())
+        print('Loading optimizer from checkpoint.')
         optim = checkpoint['optim']
-        #print(optim.optimizer)
-        #print(checkpoint['optim'].optimizer.state_dict())
         optim.optimizer.load_state_dict(
             checkpoint['optim'].optimizer.state_dict())
     else:
-    # what members of opt does Optim need?
+        # what members of opt does Optim need?
         optim = onmt.Optim(
             opt.optim, opt.learning_rate, opt.max_grad_norm,
             lr_decay=opt.learning_rate_decay,
@@ -315,6 +333,7 @@ def build_optim(model, checkpoint):
             model_size=opt.rnn_size)
 
     optim.set_parameters(model.parameters())
+    optim.set_parameters(text_model.encoder.parameters())
 
     return optim
 
@@ -322,8 +341,11 @@ def build_optim(model, checkpoint):
 def main():
 
     # Load train and validate data.
-    train_dataset = load_dataset("train")
-    valid_dataset = load_dataset("valid")
+    train_dataset = load_dataset("train", "audio")
+    valid_dataset = load_dataset("valid", "audio")
+    text_train_dataset = load_dataset("train", "text")
+    text_valid_dataset = load_dataset("valid", "text")
+    
     print(' * maximum batch size: %d' % opt.batch_size)
 
     # Load checkpoint if we resume from a previous training.
@@ -340,21 +362,27 @@ def main():
 
     # Load fields generated from preprocess phase.
     fields = load_fields(train_dataset, valid_dataset, checkpoint)
+    text_fields = load_fields(text_train_dataset, text_valid_dataset, checkpoint, "text", fields['tgt'])
+    
+    print(fields['tgt'].vocab.itos[0], fields['tgt'].vocab.itos[10])
+    print(fields['tgt'].vocab.itos[0], fields['tgt'].vocab.itos[10])
 
     # Report src/tgt features.
     collect_report_features(fields)
+    collect_report_features(text_fields)
 
     # Build model.
-    model = build_model(model_opt, opt, fields, checkpoint)
+    model, text_model = build_model(model_opt, opt, fields, text_fields, checkpoint)
     tally_parameters(model)
     check_save_model_path()
 
     # Build optimizer.
-    optim = build_optim(model, checkpoint)
+    optim = build_optim(model, text_model, checkpoint)
 
-    print("after optim")
     # Do training.
-    train_model(model, train_dataset, valid_dataset, fields, optim, model_opt)
+    train_model(model, train_dataset, valid_dataset, fields,
+                text_model, text_train_dataset, text_valid_dataset, text_fields,
+                optim, model_opt)
 
 
 if __name__ == "__main__":

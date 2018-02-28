@@ -52,9 +52,14 @@ class Optim(object):
         self.decay_method = decay_method
         self.warmup_steps = warmup_steps
         self.model_size = model_size
-
+        self.params = None
+        
     def set_parameters(self, params):
-        self.params = [p for p in params if p.requires_grad]
+        if self.params:
+            self.params = self.params + [p for p in params if p.requires_grad]
+        else:
+            self.params = [p for p in params if p.requires_grad]
+            
         if self.method == 'sgd':
             self.optimizer = optim.SGD(self.params, lr=self.lr)
         elif self.method == 'adagrad':

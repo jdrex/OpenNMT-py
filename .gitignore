@@ -1,7 +1,13 @@
+*~
+log.*
+test.pred*
+val.pred*
+
 # repo-specific stuff
 pred.txt
 multi-bleu.perl
 *.pt
+*.disc
 \#*#
 .idea
 *.sublime-*

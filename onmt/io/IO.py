@@ -288,14 +288,14 @@ def _make_examples_nfeats_tpl(data_type, src_path, src_dir,
 
     return src_examples_iter, num_src_feats
 
-
 class OrderedIterator(torchtext.data.Iterator):
     def create_batches(self):
         if self.train:
-            self.batches = torchtext.data.pool(
+            self.batches = torchtext.data.noisy_pool(
                 self.data(), self.batch_size,
                 self.sort_key, self.batch_size_fn,
-                random_shuffler=self.random_shuffler)
+                random_shuffler=self.random_shuffler,
+                shuffleK = 0, deleteRate=0.2)
         else:
             self.batches = []
             for b in torchtext.data.batch(self.data(), self.batch_size,

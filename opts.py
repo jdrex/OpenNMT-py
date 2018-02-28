@@ -8,7 +8,22 @@ def model_opts(parser):
     Be careful with these as they will be used during translation.
     """
 
-    # Embedding Options
+    parser.add_argument('-mult', type=int, default=1,
+                        help='Number of layers in the discriminator')
+    parser.add_argument('-t_mult', type=int, default=1,
+                        help='Number of layers in the discriminator')
+    parser.add_argument('-no_speech_decoder', action='store_true',
+                        help='Number of layers in the discriminator')
+    parser.add_argument('-weighted', action='store_true',
+                        help='Number of layers in the discriminator')
+    parser.add_argument('-auto_lambda', type=float, default=1.,
+                        help='Number of layers in the discriminator')
+    parser.add_argument('-gen_lambda', type=float, default=1.,
+                        help='Number of layers in the discriminator')
+    parser.add_argument('-gen_label', type=float, default=0.5,
+                        help='Number of layers in the discriminator')
+
+    # discriminator
     parser.add_argument('-discrim_layers', type=int, default=3,
                         help='Number of layers in the discriminator')
     parser.add_argument('-discrim_size', type=int, default=1024,
@@ -90,7 +105,7 @@ def model_opts(parser):
     # group.add_argument('-residual',   action="store_true",
     #                     help="Add residual connections between RNN layers.")
 
-    group.add_argument('-brnn', action=DeprecateAction,
+    group.add_argument('-brnn', action="store_true",
                        help="Deprecated, use `encoder_type`.")
     group.add_argument('-brnn_merge', default='concat',
                        choices=['concat', 'sum'],
@@ -210,6 +225,12 @@ def train_opts(parser):
 
     group = parser.add_argument_group('General')
     group.add_argument('-data', required=True,
+                       help="""Path prefix to the ".train.pt" and
+                       ".valid.pt" file path from preprocess.py""")
+    group.add_argument('-text_data',
+                       help="""Path prefix to the ".train.pt" and
+                       ".valid.pt" file path from preprocess.py""")
+    group.add_argument('-speech_data',
                        help="""Path prefix to the ".train.pt" and
                        ".valid.pt" file path from preprocess.py""")
 

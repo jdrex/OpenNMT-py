@@ -93,9 +93,17 @@ class Beam(object):
         else:
             beam_scores = word_probs[0]
         flat_beam_scores = beam_scores.view(-1)
+        if flat_beam_scores.shape[0] < self.size:
+            padding = torch.cuda.FloatTensor([-1e20]*(self.size - flat_beam_scores.shape[0]))
+            #print flat_beam_scores
+            #print padding
+            flat_beam_scores = torch.cat((flat_beam_scores, padding))
+            #print flat_beam_scores
         best_scores, best_scores_id = flat_beam_scores.topk(self.size, 0,
                                                             True, True)
-
+        #print best_scores
+        #print best_scores_id
+        
         self.all_scores.append(self.scores)
         self.scores = best_scores
 
