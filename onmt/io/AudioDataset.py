@@ -58,10 +58,13 @@ class AudioDataset(ONMTDatasetBase):
         # Peek at the first to see which fields are used.
         ex, examples_iter = self._peek(examples_iter)
         keys = ex.keys()
-        print "audio dataset keys:", keys
-        print ex["tgt"]
-        print ex["src_name"]
-        
+        try:
+            print "audio dataset keys:", keys
+            print ex["tgt"]
+            print ex["src_name"]
+        except:
+            print
+            
         out_fields = [(k, fields[k]) if k in fields else (k, None)
                       for k in keys]
         example_values = ([ex[k] for k in keys] for ex in examples_iter)
@@ -110,7 +113,7 @@ class AudioDataset(ONMTDatasetBase):
             (example_dict iterator, num_feats) tuple
         """
         examples_iter = AudioDataset.read_kaldi_audio(
-            path, "src", normalize_audio, truncate)
+            path, "src", normalize_audio, truncate, int(window_stride))
                 #path, audio_dir, "src", sample_rate,
                 #window_size, window_stride, window,
                 #normalize_audio, truncate)
@@ -119,7 +122,7 @@ class AudioDataset(ONMTDatasetBase):
         return (examples_iter, num_feats)
 
     @staticmethod
-    def read_kaldi_audio(path, side, normalize_audio, truncate=None):
+    def read_kaldi_audio(path, side, normalize_audio, truncate=None, offset=0):
         """
         Args:
             path (str): rspecifier for kaldi scp or ark file with audio features
@@ -133,12 +136,14 @@ class AudioDataset(ONMTDatasetBase):
         """
         import numpy as np
         import kaldi_io
-        feat_reader = kaldi_io.SequentialBaseFloatMatrixReader(path)
-
+        #feat_reader = kaldi_io.SequentialBaseFloatMatrixReader(str(path))
+        feat_reader = kaldi_io.read_mat_scp(path)
+        
         index = 0
         for name, feats in feat_reader:
             # nFrames x nFeats
             print name, feats.shape
+            feats = feats[offset:]
             feats = feats[:feats.shape[0]-(feats.shape[0] % 8), :]
             print feats.shape
             if truncate:

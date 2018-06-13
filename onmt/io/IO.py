@@ -291,11 +291,12 @@ def _make_examples_nfeats_tpl(data_type, src_path, src_dir,
 class OrderedIterator(torchtext.data.Iterator):
     def create_batches(self):
         if self.train:
+            print "delete:", self.dR
             self.batches = torchtext.data.noisy_pool(
                 self.data(), self.batch_size,
                 self.sort_key, self.batch_size_fn,
                 random_shuffler=self.random_shuffler,
-                shuffleK = 0, deleteRate=0.2)
+                shuffleK = 0, deleteRate=self.dR)
         else:
             self.batches = []
             for b in torchtext.data.batch(self.data(), self.batch_size,

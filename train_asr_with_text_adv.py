@@ -185,8 +185,8 @@ def make_loss_compute(model, tgt_vocab, dataset, opt, weight=False):
 
 def train_model(model, train_dataset, valid_dataset, fields, 
                 text_model, text_train_dataset, text_valid_dataset, text_fields,
-                discrim_models, discrim_optims,
-                optim, model_opt):
+                discrim_models, discrim_optims, gen_optims, 
+                optim, text_optim, model_opt):
 
     train_iter = make_train_data_iter(train_dataset, opt)
     valid_iter = make_valid_data_iter(valid_dataset, opt)
@@ -200,6 +200,8 @@ def train_model(model, train_dataset, valid_dataset, fields,
                                    train_dataset, opt, True)
     valid_loss = make_loss_compute(model, fields["tgt"].vocab,
                                    valid_dataset, opt)
+    text_valid_loss = make_loss_compute(model, fields["tgt"].vocab,
+                                   text_valid_dataset, opt, True)
 
     trunc_size = opt.truncated_decoder  # Badly named...
     shard_size = opt.max_generator_batches
@@ -207,19 +209,30 @@ def train_model(model, train_dataset, valid_dataset, fields,
 
     trainer = onmt.AudioTextTrainerAdv(model, train_iter, valid_iter,
                                        text_model, text_train_iter, text_valid_iter,
-                                       train_loss, text_loss, valid_loss, optim,
-                                       discrim_models, [model_opt.gen_label, model_opt.gen_label], model_opt.gen_lambda, 
+                                       train_loss, text_loss, valid_loss, text_valid_loss, optim, text_optim, 
+                                       discrim_models, [model_opt.gen_label, model_opt.gen_label],
+                                       gen_optims, model_opt.gen_lambda, 
                                        trunc_size, shard_size, data_type, model_opt.mult)
 
     train_iter = make_train_data_iter(train_dataset, opt, 32)
     text_train_iter = make_train_data_iter(text_train_dataset, opt, 32)
-    discrim_trainer = onmt.DiscrimTrainer(discrim_models, [train_iter, text_train_iter], discrim_optims, [0.1, 0.9], shard_size)
+    discrim_trainer = onmt.DiscrimTrainer(discrim_models, [train_iter, text_train_iter], [valid_iter, text_valid_iter], discrim_optims, [0.1, 0.9], shard_size)
 
     for epoch in range(opt.start_epoch, opt.epochs + 1):
         print('')
 
-        train_stats = discrim_trainer.train(epoch, discrim_report_func)
-        print('Discrim loss: %g' % train_stats.loss)
+        if epoch > 1:
+            src_valid_stats, tgt_valid_stats, st_valid_stats = discrim_trainer.validate()
+            print('(before) Discrim validation src loss: %g' % src_valid_stats.loss)
+            print('(before) Discrim validation src/tgt loss: %g' % st_valid_stats.loss)
+            print('(before) Discrim validation tgt loss: %g' % tgt_valid_stats.loss)
+        src_train_stats, tgt_train_stats = discrim_trainer.train(epoch, discrim_report_func)
+        print('Discrim src loss: %g' % src_train_stats.loss)
+        print('Discrim tgt loss: %g' % tgt_train_stats.loss)
+        src_valid_stats, tgt_valid_stats, st_valid_stats = discrim_trainer.validate()
+        print('(after) Discrim validation src loss: %g' % src_valid_stats.loss)
+        print('(after) Discrim validation src/tgt loss: %g' % st_valid_stats.loss)
+        print('(after) Discrim validation tgt loss: %g' % tgt_valid_stats.loss)
 
         # 1. Train for one epoch on the training set.
         train_stats, text_train_stats = trainer.train(epoch, report_func)
@@ -232,6 +245,9 @@ def train_model(model, train_dataset, valid_dataset, fields,
         valid_stats = trainer.validate()
         print('Validation perplexity: %g' % valid_stats.ppl())
         print('Validation accuracy: %g' % valid_stats.accuracy())
+        text_valid_stats = trainer.validate_text()
+        print('Text Validation perplexity: %g' % text_valid_stats.ppl())
+        print('Text Validation accuracy: %g' % text_valid_stats.accuracy())
 
         # 3. Log to remote server.
         if opt.exp_host:
@@ -357,12 +373,12 @@ def build_model(model_opt, opt, fields, text_fields, checkpoint):
     return model, text_model
 
 
-def build_optim(model, text_model, checkpoint):
+def build_optim(model, checkpoint, ckptkey = 'optim'):
     if opt.train_from:
         print('Loading optimizer from checkpoint.')
-        optim = checkpoint['optim']
+        optim = checkpoint[ckptkey]
         optim.optimizer.load_state_dict(
-            checkpoint['optim'].optimizer.state_dict())
+            checkpoint[ckptkey].optimizer.state_dict())
     else:
         # what members of opt does Optim need?
         optim = onmt.Optim(
@@ -374,10 +390,11 @@ def build_optim(model, text_model, checkpoint):
             adagrad_accum=opt.adagrad_accumulator_init,
             decay_method=opt.decay_method,
             warmup_steps=opt.warmup_steps,
-            model_size=opt.rnn_size)
+            model_size=opt.rnn_size,
+            momentum=opt.momentum,
+            nesterov=opt.nesterov)
 
     optim.set_parameters(model.parameters())
-    optim.set_parameters(text_model.encoder.parameters())
 
     return optim
 
@@ -404,7 +421,9 @@ def build_discrim_optim(model, checkpoint, ind):
             adagrad_accum=opt.adagrad_accumulator_init,
             decay_method=opt.decay_method,
             warmup_steps=opt.warmup_steps,
-            model_size=opt.rnn_size)
+            model_size=opt.rnn_size,
+            momentum=opt.momentum,
+            nesterov=opt.nesterov)
 
     optim.set_parameters(model.parameters())
 
@@ -456,16 +475,20 @@ def main():
     check_save_model_path()
 
     # Build optimizer.
-    optim = build_optim(model, text_model, checkpoint)
+    optim = build_optim(model, checkpoint)
+    text_optim = build_optim(text_model, checkpoint, ckptkey='text_optim')
+    
     discrim_optims = []
+    gen_optims = []
     for i, m in enumerate(discrim_models):
         discrim_optims.append(build_discrim_optim(m.classifier, discrim_checkpoint, i))
+        gen_optims.append(build_discrim_optim(m.encoder, checkpoint, i))
 
     # Do training.
     train_model(model, train_dataset, valid_dataset, fields,
                 text_model, text_train_dataset, text_valid_dataset, text_fields,
-                discrim_models, discrim_optims, 
-                optim, model_opt)
+                discrim_models, discrim_optims, gen_optims, 
+                optim, text_optim, model_opt)
 
 
 if __name__ == "__main__":

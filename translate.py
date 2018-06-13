@@ -16,6 +16,12 @@ import onmt.ModelConstructor
 import onmt.modules
 import opts
 
+import matplotlib as mpl
+mpl.use('Agg')
+import matplotlib.pyplot as plt
+import matplotlib.ticker as ticker
+import numpy as np
+
 parser = argparse.ArgumentParser(
     description='translate.py',
     formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -53,6 +59,8 @@ def main():
     opts.model_opts(dummy_parser)
     dummy_opt = dummy_parser.parse_known_args([])[0]
 
+    print "attn figures:", opt.report_attn
+    
     opt.cuda = opt.gpu > -1
     if opt.cuda:
         torch.cuda.set_device(opt.gpu)
@@ -61,6 +69,12 @@ def main():
     fields, model, model_opt = \
         onmt.ModelConstructor.load_test_model(opt, dummy_opt.__dict__)
 
+    if opt.data_type == "text":
+        print(fields['src'].vocab.stoi)
+
+    #if hasattr(model.decoder, "attn_window"):
+    #   model.decoder.attn_window = 20
+       
     # File to write sentences to.
     out_file = codecs.open(opt.output, 'w', 'utf-8')
 
@@ -82,10 +96,18 @@ def main():
         sort_within_batch=True, shuffle=False)
 
     # Translator
+    #lmPath = '/data/sls/scratch/jdrexler/attention-lvcsr/exp/wsj/data/new_lms/wsj_trigram_with_bos/LG_pushed_withsyms.fst'
+    if opt.useLM:
+        lmPath = '/data/sls/scratch/jdrexler/OpenNMT-py/data/wsj/lms/wsj_trigram_with_bos/LG_pushed_withsyms.fst'
+        print "LM:", lmPath
+        lm = onmt.translate.LanguageModel(lmPath, data.fields['tgt'].vocab.stoi)
+    else:
+        lm = None
+        
     scorer = onmt.translate.GNMTGlobalScorer(opt.alpha, opt.beta)
-    translator = onmt.translate.Translator(model, fields,
+    translator = onmt.translate.Translator(model, fields, lm=lm,
                                            beam_size=opt.beam_size,
-                                           n_best=opt.n_best,
+                                           n_best= opt.n_best,
                                            global_scorer=scorer,
                                            max_length=opt.max_length,
                                            copy_attn=model_opt.copy_attn,
@@ -122,6 +144,45 @@ def main():
                 sent_number = next(counter)
                 output = trans.log(sent_number)
                 os.write(1, output.encode('utf-8'))
+                if sent_number in opt.report_attn:
+                    maxX = -1
+                    if sent_number == 69:
+                        maxX = 50
+                    elif sent_number == 127:
+                        maxX = 60
+                    elif sent_number == 129:
+                        maxX = 50
+                    elif sent_number == 137:
+                        maxX = 50
+                    elif sent_number == 199:
+                        maxX = 50
+                    print("ATTN")
+                    attn = trans.attns[0][:, 0:maxX].cpu().numpy().transpose()
+
+                    if opt.data_type == "text":
+                        plt.figure(figsize=(50, 50), dpi=1000)
+                        _, ax = plt.subplots()
+                        plt.imshow(attn, aspect=0.5) #, extent=)
+                        maxY = attn.shape[0]
+                        plt.yticks(range(0, maxY))
+                        ticklabels = [" " if x == "SPACE" else x for x in trans.gold_sent]
+                        ax.yaxis.set_ticklabels(ticklabels[:maxY])
+                    else:
+                        plt.figure(figsize=(1, 4), dpi=100)
+                        _, ax = plt.subplots()
+                        plt.imshow(attn, aspect=0.15) #, extent=)
+                        maxY = attn.shape[0]
+                        plt.yticks(range(0, maxY+1, 10))
+                        ax.yaxis.set_ticklabels(range(0, maxY+1, 10))
+                        
+                    plt.xticks(range(0, len(trans.pred_sents[0])))
+                    ticklabels = [" " if x == "SPACE" else x for x in trans.pred_sents[0]]
+                    if sent_number == 69:
+                        print "LABELS!", ticklabels
+                    ax.xaxis.set_ticklabels(ticklabels)
+    
+                    #plt.colorbar()
+                    plt.savefig("attn" + str(sent_number) + "_" + opt.model + ".png", dpi=1000)
 
     _report_score('PRED', pred_score_total, pred_words_total)
     if opt.tgt:

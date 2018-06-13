@@ -118,7 +118,7 @@ class LossComputeBase(nn.Module):
 
         for shard in shards(shard_state, shard_size):
             loss, stats = self._compute_loss(batch, **shard)
-            loss.div(batch.batch_size).backward()
+            loss.div(batch.batch_size).backward(retain_graph=True)
             batch_stats.update(stats)
 
         return batch_stats
@@ -173,8 +173,11 @@ class NMTLossCompute(LossComputeBase):
             print "loss weight:", weight_mult, weight[10]
             self.criterion = nn.NLLLoss(weight, size_average=False)
         self.confidence = 1.0 - label_smoothing
-
+        self.verbose=False
+        
     def _make_shard_state(self, batch, output, range_, attns=None):
+        if self.verbose:
+            print "shard:", batch.tgt.shape, batch.tgt[range_[0] + 1: range_[1]].shape
         return {
             "output": output,
             "target": batch.tgt[range_[0] + 1: range_[1]],
@@ -194,6 +197,11 @@ class NMTLossCompute(LossComputeBase):
                 likelihood.index_fill_(0, mask, 0)
                 tmp_.index_fill_(0, mask, 0)
             gtruth = Variable(tmp_, requires_grad=False)
+
+        if self.verbose:
+            
+            print "scores 0:", scores[0, :]        
+            print "gt 0:", gtruth[0]        
 
         loss = self.criterion(scores, gtruth)
         if self.confidence < 1:
@@ -288,4 +296,4 @@ def shards(state, shard_size, eval=False):
         variables = ((state[k], v.grad.data) for k, v in non_none.items()
                      if isinstance(v, Variable) and v.grad is not None)
         inputs, grads = zip(*variables)
-        torch.autograd.backward(inputs, grads)
+        torch.autograd.backward(inputs, grads, retain_graph=True)

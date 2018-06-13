@@ -33,11 +33,13 @@ class Optim(object):
     # established value, so we use that here as well
     def __init__(self, method, lr, max_grad_norm,
                  lr_decay=1, start_decay_at=None,
+                 decay_every=20,
                  beta1=0.9, beta2=0.999,
                  adagrad_accum=0.0,
                  decay_method=None,
                  warmup_steps=4000,
-                 model_size=None):
+                 model_size=None,
+                 momentum=0, nesterov=False):
         self.last_ppl = None
         self.lr = lr
         self.original_lr = lr
@@ -46,12 +48,15 @@ class Optim(object):
         self.lr_decay = lr_decay
         self.start_decay_at = start_decay_at
         self.start_decay = False
+        self.decay_every = decay_every
         self._step = 0
         self.betas = [beta1, beta2]
         self.adagrad_accum = adagrad_accum
         self.decay_method = decay_method
         self.warmup_steps = warmup_steps
         self.model_size = model_size
+        self.momentum=momentum
+        self.nesterov=nesterov
         self.params = None
         
     def set_parameters(self, params):
@@ -61,7 +66,10 @@ class Optim(object):
             self.params = [p for p in params if p.requires_grad]
             
         if self.method == 'sgd':
-            self.optimizer = optim.SGD(self.params, lr=self.lr)
+            try:
+                self.optimizer = optim.SGD(self.params, lr=self.lr, momentum=self.momentum, nesterov=self.nesterov)
+            except:
+                self.optimizer = optim.SGD(self.params, lr=self.lr)
         elif self.method == 'adagrad':
             self.optimizer = optim.Adagrad(self.params, lr=self.lr)
             for group in self.optimizer.param_groups:
@@ -69,7 +77,9 @@ class Optim(object):
                     self.optimizer.state[p]['sum'] = self.optimizer\
                         .state[p]['sum'].fill_(self.adagrad_accum)
         elif self.method == 'adadelta':
-            self.optimizer = optim.Adadelta(self.params, lr=self.lr)
+            self.optimizer = optim.Adadelta(self.params, lr=self.lr, rho=0.95, eps=1e-8)
+        elif self.method == 'asgd':
+            self.optimizer = optim.ASGD(self.params, lr=self.lr)
         elif self.method == 'adam':
             self.optimizer = optim.Adam(self.params, lr=self.lr,
                                         betas=self.betas, eps=1e-9)
@@ -78,6 +88,8 @@ class Optim(object):
         else:
             raise RuntimeError("Invalid optim method: " + self.method)
 
+        print(self.optimizer)
+        
     def _set_rate(self, lr):
         self.lr = lr
         self.optimizer.param_groups[0]['lr'] = self.lr
@@ -108,6 +120,8 @@ class Optim(object):
         or we hit the start_decay_at limit.
         """
 
+        '''
+        # ORIGINAL
         if self.start_decay_at is not None and epoch >= self.start_decay_at:
             self.start_decay = True
         if self.last_ppl is not None and ppl > self.last_ppl:
@@ -116,6 +130,12 @@ class Optim(object):
         if self.start_decay:
             self.lr = self.lr * self.lr_decay
             print("Decaying learning rate to %g" % self.lr)
+        '''
 
+        if self.start_decay_at is not None:
+            if epoch >= self.start_decay_at and epoch % self.decay_every == 0:
+                self.lr = self.lr * self.lr_decay
+                print("Decaying learning rate to %g" % self.lr)
+            
         self.last_ppl = ppl
         self.optimizer.param_groups[0]['lr'] = self.lr

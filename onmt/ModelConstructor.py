@@ -11,10 +11,10 @@ import onmt.Models
 import onmt.modules
 from onmt.Models import NMTModel, MeanEncoder, RNNEncoder, \
                         StdRNNDecoder, InputFeedRNNDecoder, InputFeedRNNDecoderNoAttention, \
-                        DiscrimClassifier, DiscrimModel, AudioDecoder, SpeechModel
+                        DiscrimClassifier, DiscrimModel, AudioDecoder, FFAudioDecoder, SpeechModel
 from onmt.modules import Embeddings, ImageEncoder, CopyGenerator, \
                          TransformerEncoder, TransformerDecoder, \
-                         CNNEncoder, CNNDecoder, AudioEncoder, GlobalAudioEncoder
+                         CNNEncoder, CNNDecoder, AudioEncoder, GlobalAudioEncoder, ConvGlobalAudioEncoder
 from onmt.Utils import use_gpu
 
 
@@ -155,6 +155,33 @@ def load_test_model(opt, dummy_opt):
     model.generator.eval()
     return fields, model, model_opt
 
+def load_semi_sup_test_model(opt, dummy_opt):
+    checkpoint = torch.load(opt.model,
+                            map_location=lambda storage, loc: storage)
+    fields = onmt.io.load_fields_from_vocab(
+        checkpoint['vocab'], data_type=opt.data_type)
+
+    text_fields = onmt.io.load_fields_from_vocab(
+                torch.load(opt.vocab), "text")
+    text_fields['tgt'] = fields['tgt']
+
+    print(' * vocabulary size. source = %d; target = %d' %
+          (len(text_fields['src'].vocab), len(text_fields['tgt'].vocab)))
+
+    model_opt = checkpoint['opt']
+    for arg in dummy_opt:
+        if arg not in model_opt:
+            model_opt.__dict__[arg] = dummy_opt[arg]
+
+    model, text_model, _ = make_audio_text_model(model_opt, fields, text_fields, use_gpu(opt), checkpoint)
+    
+    model.eval()
+    text_model.eval()
+    model.generator.eval()
+    text_model.generator.eval()
+
+    return fields, text_fields, model, text_model, model_opt
+
 def make_audio_text_model(model_opt, fields, text_fields, gpu, checkpoint=None):
     model = make_base_model(model_opt, fields, gpu, checkpoint)
     
@@ -168,21 +195,52 @@ def make_audio_text_model(model_opt, fields, text_fields, gpu, checkpoint=None):
     text_model = NMTModel(text_encoder, model.decoder)
     text_model.model_type = 'text'
     text_model.decoder.set_generator(None)
-    
-    global_speech_encoder = GlobalAudioEncoder(model_opt.enc_layers,
+
+    try:
+        if model_opt.conv_global_encoder:
+            global_speech_encoder = ConvGlobalAudioEncoder(model_opt.enc_layers,
                                model_opt.brnn,
                                model_opt.rnn_size,
                                model_opt.dropout,
                                model_opt.sample_rate,
                                model_opt.window_size)
+        else:
+            global_speech_encoder = GlobalAudioEncoder(model_opt.enc_layers,
+                               model_opt.brnn,
+                               model_opt.rnn_size,
+                               model_opt.dropout,
+                               model_opt.sample_rate,
+                               model_opt.window_size)
+    except:
+        global_speech_encoder = GlobalAudioEncoder(model_opt.enc_layers,
+                               model_opt.brnn,
+                               model_opt.rnn_size,
+                               model_opt.dropout,
+                               model_opt.sample_rate,
+                               model_opt.window_size)
+
+    try:
+        print "ff:", model_opt.ff_speech_decoder
     
-    speech_decoder = AudioDecoder(model_opt.rnn_type, model_opt.brnn,
+        if model_opt.ff_speech_decoder:
+            speech_decoder = FFAudioDecoder(model_opt.rnn_size*3, model_opt.rnn_size, model_opt.dec_layers)
+        else:
+            speech_decoder = AudioDecoder(model_opt.rnn_type, model_opt.brnn,
                              model_opt.dec_layers, model_opt.rnn_size,
                              model_opt.global_attention,
                              model_opt.coverage_attn,
                              model_opt.context_gate,
                              model_opt.copy_attn,
                              model_opt.dropout)
+    except:
+        speech_decoder = AudioDecoder(model_opt.rnn_type, model_opt.brnn,
+                             model_opt.dec_layers, model_opt.rnn_size,
+                             model_opt.global_attention,
+                             model_opt.coverage_attn,
+                             model_opt.context_gate,
+                             model_opt.copy_attn,
+                             model_opt.dropout)
+        
     speech_model = SpeechModel(model.encoder, global_speech_encoder, speech_decoder)
     
     # Load the model states from checkpoint or initialize them.
@@ -226,27 +284,61 @@ def make_audio_text_model_from_text(model_opt, fields, text_fields, gpu, checkpo
     text_encoder = make_encoder(model_opt, src_embeddings)
 
     generator = model.generator
-    
+    generator.load_state_dict(checkpoint['generator'])
+
     text_model = NMTModel(text_encoder, model.decoder)
     text_model.model_type = 'text'
     text_model.decoder.set_generator(None)
-    
-    global_speech_encoder = GlobalAudioEncoder(model_opt.enc_layers,
+
+    try:
+        if model_opt.conv_global_encoder:
+            global_speech_encoder = ConvGlobalAudioEncoder(model_opt.enc_layers,
                                model_opt.brnn,
                                model_opt.rnn_size,
                                model_opt.dropout,
                                model_opt.sample_rate,
                                model_opt.window_size)
+        else:
+            global_speech_encoder = GlobalAudioEncoder(model_opt.enc_layers,
+                               model_opt.brnn,
+                               model_opt.rnn_size,
+                               model_opt.dropout,
+                               model_opt.sample_rate,
+                               model_opt.window_size)
+    except:
+        global_speech_encoder = GlobalAudioEncoder(model_opt.enc_layers,
+                               model_opt.brnn,
+                               model_opt.rnn_size,
+                               model_opt.dropout,
+                               model_opt.sample_rate,
+                               model_opt.window_size)
+
+        
+    print "ff:", model_opt.ff_speech_decoder
     
-    speech_decoder = AudioDecoder(model_opt.rnn_type, model_opt.brnn,
+    if model_opt.ff_speech_decoder:
+        speech_decoder = FFAudioDecoder(model_opt.rnn_size*3, model_opt.rnn_size, model_opt.dec_layers)
+    else:
+        speech_decoder = AudioDecoder(model_opt.rnn_type, model_opt.brnn,
                              model_opt.dec_layers, model_opt.rnn_size,
                              model_opt.global_attention,
                              model_opt.coverage_attn,
                              model_opt.context_gate,
                              model_opt.copy_attn,
                              model_opt.dropout)
+
     speech_model = SpeechModel(model.encoder, global_speech_encoder, speech_decoder)
-    
+
+    if model_opt.param_init != 0.0:
+        print('Intializing model parameters.')
+        for p in text_model.parameters():
+            p.data.uniform_(-model_opt.param_init, model_opt.param_init)
+        for p in speech_model.parameters():
+            p.data.uniform_(-model_opt.param_init, model_opt.param_init)
+    if hasattr(text_model.encoder, 'embeddings'):
+        text_model.encoder.embeddings.load_pretrained_vectors(
+            model_opt.pre_word_vecs_enc, model_opt.fix_word_vecs_enc)
+
     # Load the model states from checkpoint or initialize them.
     if checkpoint is not None:
         print('Loading model parameters.')
@@ -254,16 +346,6 @@ def make_audio_text_model_from_text(model_opt, fields, text_fields, gpu, checkpo
         if checkpoint.has_key('speech_model') and checkpoint['speech_model'] is not None:
             print('  Loading speech model parameters')
             speech_model.load_state_dict(checkpoint['speech_model'])
-    else:
-        if model_opt.param_init != 0.0:
-            print('Intializing model parameters.')
-            for p in text_model.parameters():
-                p.data.uniform_(-model_opt.param_init, model_opt.param_init)
-            for p in speech_model.parameters():
-                p.data.uniform_(-model_opt.param_init, model_opt.param_init)
-        if hasattr(text_model.encoder, 'embeddings'):
-            text_model.encoder.embeddings.load_pretrained_vectors(
-                    model_opt.pre_word_vecs_enc, model_opt.fix_word_vecs_enc)
 
     # Add generator to model (this registers it as parameter of model).
     text_model.decoder.set_generator(generator)
@@ -330,7 +412,9 @@ def make_base_model(model_opt, fields, gpu, checkpoint=None):
         tgt_embeddings.word_lut.weight = src_embeddings.word_lut.weight
 
     decoder = make_decoder(model_opt, tgt_embeddings)
-
+    if hasattr(model_opt, "attn_window"):
+        decoder.attn_window = model_opt.attn_window
+    
     # Make NMTModel(= encoder + decoder).
     model = NMTModel(encoder, decoder)
     model.model_type = model_opt.model_type

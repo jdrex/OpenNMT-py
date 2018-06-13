@@ -101,6 +101,8 @@ class Beam(object):
             #print flat_beam_scores
         best_scores, best_scores_id = flat_beam_scores.topk(self.size, 0,
                                                             True, True)
+        best_scores = best_scores
+        best_scores_id = best_scores_id
         #print best_scores
         #print best_scores_id
         
@@ -131,6 +133,7 @@ class Beam(object):
             self.eos_top = True
 
     def done(self):
+        print len(self.finished), "/", self.n_best, "hypotheses finished"
         return self.eos_top and len(self.finished) >= self.n_best
 
     def sort_finished(self, minimum=None):

@@ -22,7 +22,7 @@ from onmt.Trainer import Statistics
 import numpy as np
 
 class DiscrimTrainer(object):
-    def __init__(self, models, train_iters, optims, labels, shard_size):
+    def __init__(self, models, train_iters, valid_iters, optims, labels, shard_size, big_text):
         """
         Args:
             model: the seq2seq model.
@@ -34,34 +34,47 @@ class DiscrimTrainer(object):
         # Basic attributes.
         self.src_model = models[0]
         self.src_train_iter = train_iters[0]
+        self.src_valid_iter = valid_iters[0]
         self.src_optim = optims[0]
         self.src_label = labels[0]
 
         if len(models) > 1:
             self.tgt_model = models[1]
             self.tgt_train_iter = train_iters[1]
+            self.tgt_valid_iter = valid_iters[1]
             self.tgt_optim = optims[1]
             self.tgt_label = labels[1]
             self.tgt_model.train()
-
+            self.big_text = big_text
+            
         self.shard_size = shard_size
         self.criterion = nn.BCEWithLogitsLoss() #CrossEntropyLoss()
         # Set model in training mode.
         self.src_model.train()
 
-    def train(self, epoch, report_func=None):
+    def train(self, epoch, report_func=None, batch_override=-1, text=None):
         """ Called for each epoch to train. """
-        total_stats = Statistics()
+        src_total_stats = Statistics()
+        tgt_total_stats = Statistics()
         report_stats = Statistics()
 
         src_batches = [s for s in self.src_train_iter]
         nBatches = len(src_batches)
         
         if hasattr(self, 'tgt_model'):
-            tgt_batches = [t for t in self.tgt_train_iter]
-    
+            if self.big_text:
+                tgt_batches = [t for t in text]
+            else:
+                tgt_batches = [t for t in self.tgt_train_iter]
+            
             nBatches = min(len(src_batches), len(tgt_batches))
-        
+        if batch_override > 0:
+            nBatches = batch_override
+
+        src_batches = src_batches[:nBatches]
+        if hasattr(self, 'tgt_model'):
+            tgt_batches = tgt_batches[:nBatches]
+            
         for i in range(nBatches):
             # SRC
             batch = src_batches[i]
@@ -87,7 +100,7 @@ class DiscrimTrainer(object):
             #    print "discriminator", i, self.src_label
             #    print outputs.data[0:5], loss.data[0]
             
-            total_stats.update_loss(loss.data[0])
+            src_total_stats.update_loss(loss.data[0])
             report_stats.update_loss(loss.data[0])
 
             # 4. Update the parameters and statistics.
@@ -109,7 +122,12 @@ class DiscrimTrainer(object):
             report_stats.n_src_words += src_lengths.sum()
 
             self.tgt_model.zero_grad()
-            outputs = self.tgt_model(src, src_lengths)
+            try:
+                outputs = self.tgt_model(src, src_lengths)
+            except:
+                print src_lengths
+                raise
+            
             l = [self.tgt_label]*outputs.size()[0]
             labels = Variable(torch.cuda.FloatTensor(l).view(-1,1))
             weights = torch.cuda.FloatTensor(src.size()[0], src.size()[1]).zero_()
@@ -124,7 +142,7 @@ class DiscrimTrainer(object):
             #    print "discriminator", i, self.tgt_label
             #    print outputs.data[0:5], loss.data[0]
             
-            total_stats.update_loss(loss.data[0])
+            tgt_total_stats.update_loss(loss.data[0])
             report_stats.update_loss(loss.data[0])
 
             # 4. Update the parameters and statistics.
@@ -133,9 +151,9 @@ class DiscrimTrainer(object):
             if report_func is not None:
                 report_stats = report_func(
                         epoch, i, nBatches,
-                        total_stats.start_time, self.src_optim.lr, report_stats)
+                        src_total_stats.start_time, self.src_optim.lr, report_stats)
 
-        return total_stats
+        return src_total_stats, tgt_total_stats
 
     def add_noise(self, src_lengths, src):
         s_l_n = src_lengths.cpu().numpy()
@@ -170,7 +188,74 @@ class DiscrimTrainer(object):
         src.cuda()
 
         return src_lengths, src
-    
+
+    def validate(self):
+        """ Validate model.
+
+        Returns:
+            :obj:`onmt.Statistics`: validation loss statistics
+        """
+        # Set model in validating mode.
+        self.src_model.eval()
+        self.tgt_model.eval()
+        
+        tgt_stats = Statistics()
+        src_stats = Statistics()
+        src_tgt_stats = Statistics()
+
+        for batch in self.src_valid_iter:
+            
+            src = onmt.io.make_features(batch, 'src', 'audio')
+            src_labels = src.squeeze().sum(1)[:, 0:-1:8].data.cpu().numpy()
+            #print src.size(), src_labels.shape
+
+            outputs = self.src_model(src, None)
+            l = [self.src_label]*outputs.size()[0]
+            labels = Variable(torch.cuda.FloatTensor(l).view(-1,1))
+            w = np.zeros(src_labels.shape)
+            w[src_labels != 0.] = 1.
+            weights = torch.cuda.FloatTensor(w)
+            self.criterion.weight = weights.view(-1,1)[:outputs.size()[0], :]
+
+            # Compute loss.
+            loss = self.criterion(outputs, labels)
+
+            # Update statistics.
+            src_stats.update_loss(loss.data[0])
+
+            l = [self.tgt_label]*outputs.size()[0]
+            labels = Variable(torch.cuda.FloatTensor(l).view(-1,1))
+            loss = self.criterion(outputs, labels)
+            src_tgt_stats.update_loss(loss.data[0])
+
+        for batch in self.tgt_valid_iter:
+            
+            _, tgt_lengths = batch.src
+
+            tgt = onmt.io.make_features(batch, 'src')
+            #print src.size(), src_labels.shape
+
+            outputs = self.tgt_model(tgt, tgt_lengths)
+            l = [self.tgt_label]*outputs.size()[0]
+            labels = Variable(torch.cuda.FloatTensor(l).view(-1,1))
+            weights = torch.cuda.FloatTensor(tgt.size()[0], tgt.size()[1]).zero_()
+            for j in range(len(tgt_lengths)):
+                weights[:tgt_lengths[j], j] = 1.
+
+            self.criterion.weight = weights.view(-1,1)[:outputs.size()[0], :]
+
+            # Compute loss.
+            loss = self.criterion(outputs, labels)
+
+            # Update statistics.
+            tgt_stats.update_loss(loss.data[0])
+
+        # Set model back to training mode.
+        self.src_model.train()
+        self.tgt_model.train()
+
+        return src_stats, tgt_stats, src_tgt_stats
+
     def epoch_step(self, ppl, epoch):
         """ Called for each epoch to update learning rate. """
         return self.optim.updateLearningRate(ppl, epoch)

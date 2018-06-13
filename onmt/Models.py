@@ -196,6 +196,7 @@ class RNNDecoderBase(nn.Module):
 
         # Basic attributes.
         self.decoder_type = 'rnn'
+        self.attn_window = 0
         self.bidirectional_encoder = bidirectional_encoder
         print self.bidirectional_encoder
         self.num_layers = num_layers
@@ -234,7 +235,7 @@ class RNNDecoderBase(nn.Module):
             )
             self._copy = True
 
-    def forward(self, input, context, state, context_lengths=None):
+    def forward(self, input, context, state, context_lengths=None,step=-1):
         """
         Args:
             input (`LongTensor`): sequences of padded tokens
@@ -264,7 +265,7 @@ class RNNDecoderBase(nn.Module):
         #print "rnndecoderbase forward:", input_len, contxt_len, input_batch, contxt_batch
         #print context_lengths
         hidden, outputs, attns, coverage = self._run_forward_pass(
-            input, context, state, context_lengths=context_lengths)
+            input, context, state, context_lengths=context_lengths,step=step)
 
         # Update the state with the result.
         final_output = outputs[-1]
@@ -434,8 +435,9 @@ class InputFeedRNNDecoder(RNNDecoderBase):
     def set_generator(self, generator):
         self.generator  = generator
         self.sampleProb = 0.1
+        self.verbose = False
         
-    def _run_forward_pass(self, input, context, state, context_lengths=None):
+    def _run_forward_pass(self, input, context, state, context_lengths=None,step=-1):
         """
         See StdRNNDecoder._run_forward_pass() for description
         of arguments and return values.
@@ -471,7 +473,11 @@ class InputFeedRNNDecoder(RNNDecoderBase):
 
         # Input feed concatenates hidden state with
         # input at every time step.
+        #print context_lengths
+        if step < 0:
+            step = 0
         for i, emb_t in enumerate(emb.split(1)):
+            #print i, input[i][0]
             if i > 0 and np.random.uniform() < self.sampleProb:
                 outProbs = self.generator(output)
                 #outProbs.data.cpu()
@@ -483,6 +489,8 @@ class InputFeedRNNDecoder(RNNDecoderBase):
                     samp = np.nonzero(np.random.multinomial(1, probs))
                     #print j, samp, samp[0][0]
                     outSample[0,j,0] = samp[0][0]
+                    #if j == 0:
+                    #    print "sampled", samp[0][0] 
                 emb_t = self.embeddings(Variable(outSample.cuda())).squeeze(0)
 
             else:
@@ -495,10 +503,42 @@ class InputFeedRNNDecoder(RNNDecoderBase):
 
             #print emb_t.size(), hidden[0].size(), len(hidden)
             rnn_output, hidden = self.rnn(emb_t, hidden)
-            attn_output, attn = self.attn(
-                rnn_output,
-                context.transpose(0, 1),
-                context_lengths=context_lengths)
+            if hasattr(self, "attn_window") and self.attn_window > 0:
+                ws = max(min(step - self.attn_window, context.size(0) - self.attn_window), 0)
+                we = min(step + self.attn_window, context.size(0))
+                #context_in = context.transpose(0, 1)[:, ws:we, :]  # batch x len x dim
+                
+                #print step, ws, we, context.size(), context_in.size()
+                if context_lengths is not None:
+                    #context_in_lengths = context_lengths - ws
+                    context_in_lengths = torch.min(context_lengths, torch.cuda.LongTensor([we]))
+                    #context_in_lengths = torch.max(context_in_lengths, torch.cuda.LongTensor([0]))
+                    #print context_lengths
+                    #print context_in_lengths
+                else:
+                    context_in_lengths = torch.cuda.FloatTensor([min(context.size(0), we)]*context.size(1))
+
+                print step, ws, we
+                print context_lengths
+                print context_in_lengths
+                
+                attn_output, attn = self.attn(
+                    rnn_output,
+                    context.transpose(0, 1), 
+                    context_lengths=context_in_lengths, start=ws)
+                
+                #print attn_output.size(), attn_win.size()
+                # attn_win = batch x context_in_len
+                
+                #tmp_attn = torch.cuda.FloatTensor(context.size(0), context.size(1)).zero_()
+                #tmp_attn[ws:we, :] = attn_win.data
+                #attn = Variable(tmp_attn)
+                #print attn_output.size(), attn_win.size(), attn.size()
+            else:
+                attn_output, attn = self.attn(
+                    rnn_output,
+                    context.transpose(0, 1),
+                    context_lengths=context_lengths)
             
             if self.context_gate is not None:
                 # TODO: context gate should be employed
@@ -526,6 +566,7 @@ class InputFeedRNNDecoder(RNNDecoderBase):
                                               context.transpose(0, 1))
                 attns["copy"] += [copy_attn]
 
+            step += 1
         # Return result.
         return hidden, outputs, attns, coverage
 
@@ -575,7 +616,8 @@ class AudioDecoder(RNNDecoderBase):
         
         self.embeddings = embeddings
         self.dropout = nn.Dropout(dropout)
-
+        self.recurrent = True
+        
         # to incorporate global encoder
         self.hidden_size=self.hidden_size+hidden_size
         self.bidirectional_encoder = False
@@ -936,24 +978,31 @@ class SpeechModel(nn.Module):
                  * dictionary attention dists of `[tgt_len x batch x src_len]`
                  * final decoder state
         """
-        tgt = tgt[:-1]  # exclude last target from inputs
         global_hidden, globalCon = self.globalEncoder(src, lengths)
         enc_hidden, context = self.encoder(src, lengths)
         globalCon = globalCon.expand(context.size(0), -1, -1)
+        print "context:", context.size()
+        print "global context:", globalCon.size()
+        print "global hidden:", global_hidden[0].size(), global_hidden[1].size()
         context = torch.cat((context, globalCon), -1)
         enc_hidden = (torch.cat([enc_hidden[0][0:1], enc_hidden[0][1:2], global_hidden[0][0:1]], 2),
                       torch.cat([enc_hidden[1][0:1], enc_hidden[1][1:2], global_hidden[1][0:1]], 2))
         #print enc_hidden[0].size(), enc_hidden[1].size() #global_hidden[0].size()
-        enc_state = self.decoder.init_decoder_state(src, context, enc_hidden)
-        out, dec_state, attns = self.decoder(tgt, context,
-                                             enc_state if dec_state is None
-                                             else dec_state,
-                                             context_lengths=lengths)
-        if self.multigpu:
-            # Not yet supported on multi-gpu
-            dec_state = None
-            attns = None
-        return out, attns, dec_state
+
+        if self.decoder.recurrent:
+            enc_state = self.decoder.init_decoder_state(src, context, enc_hidden)
+            tgt = tgt[:-1]  # exclude last target from inputs
+            out, dec_state, attns = self.decoder(tgt, context,
+                                                 enc_state if dec_state is None
+                                                 else dec_state,
+                                                 context_lengths=lengths)
+            if self.multigpu:
+                # Not yet supported on multi-gpu
+                dec_state = None
+                attns = None
+            return out, attns, dec_state
+        else:
+            return self.decoder(context)
 
 class DiscrimModel(nn.Module):
     """
@@ -1004,6 +1053,31 @@ class DiscrimModel(nn.Module):
         out = self.classifier(context.view(-1, context.size(2)))
         return out
 
+class FFAudioDecoder(nn.Module):
+    def __init__(self, input_size, hidden_size, num_layers):
+        super(FFAudioDecoder, self).__init__()
+        self.input_size = input_size#*4
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
+        self.feature_size = 41
+        self.upsample = 8
+        self.recurrent = False
+        
+        layers = [nn.Linear(self.input_size, self.hidden_size), nn.LeakyReLU()]
+        for l in range(num_layers-1):
+            layers.append(nn.Linear(self.hidden_size, self.hidden_size))
+            layers.append(nn.LeakyReLU())
+        layers.append(nn.Linear(self.hidden_size, self.feature_size*self.upsample)) 
+        layers.append(nn.Tanh())
+
+        self.decoder = nn.Sequential(*layers)
+        
+    def forward(self, input):        
+        print "ff audio decoder input", input.size() # batch_size x len x nFeatures
+        output = self.decoder(input.view(-1, input.size(2)))
+        print "ff audio decoder output", output.size() # batch_size x len/8 x nFeature*8
+        return output.view(input.size(0)*self.upsample, input.size(1), -1)[1:, :, :], None, None
+    
 class DiscrimClassifier(nn.Module):
     def __init__(self, input_size, hidden_size, num_layers):
         super(DiscrimClassifier, self).__init__()
@@ -1035,11 +1109,13 @@ class DecoderState(object):
     def detach(self):
         for h in self._all:
             if h is not None:
-                h.detach_()
+                h.detach()
 
     def beam_update(self, idx, positions, beam_size):
+        #print "beam update:", idx, positions
         for e in self._all:
             a, br, d = e.size()
+            #print a, br, d
             sent_states = e.view(a, beam_size, br // beam_size, d)[:, :, idx]
             sent_states.data.copy_(
                 sent_states.data.index_select(1, positions))

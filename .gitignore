@@ -2,6 +2,7 @@
 log.*
 test.pred*
 val.pred*
+*.png
 
 # repo-specific stuff
 pred.txt

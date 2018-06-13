@@ -307,12 +307,15 @@ def build_optim(model, checkpoint):
             opt.optim, opt.learning_rate, opt.max_grad_norm,
             lr_decay=opt.learning_rate_decay,
             start_decay_at=opt.start_decay_at,
+            decay_every=opt.decay_every,
             beta1=opt.adam_beta1,
             beta2=opt.adam_beta2,
             adagrad_accum=opt.adagrad_accumulator_init,
             decay_method=opt.decay_method,
             warmup_steps=opt.warmup_steps,
-            model_size=opt.rnn_size)
+            model_size=opt.rnn_size,
+            momentum=opt.momentum,
+            nesterov=opt.nesterov)
 
     optim.set_parameters(model.parameters())
 

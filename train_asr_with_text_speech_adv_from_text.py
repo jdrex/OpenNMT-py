@@ -182,7 +182,7 @@ def make_loss_compute(model, tgt_vocab, dataset, opt, weight=False):
 
 
 def train_model(model, train_dataset, valid_dataset, fields, 
-                text_model, text_train_dataset, text_fields,
+                text_model, text_train_dataset, text_valid_dataset, text_fields,
                 speech_model, speech_train_dataset,
                 discrim_models, discrim_optims,
                 optim, model_opt):
@@ -191,15 +191,18 @@ def train_model(model, train_dataset, valid_dataset, fields,
     valid_iter = make_valid_data_iter(valid_dataset, opt)
 
     text_train_iter = make_train_data_iter(text_train_dataset, opt)
+    text_valid_iter = make_valid_data_iter(text_valid_dataset, opt)
     speech_train_iter = make_train_data_iter(speech_train_dataset, opt)
 
     train_loss = make_loss_compute(model, fields["tgt"].vocab,
                                    train_dataset, opt)
     text_loss = make_loss_compute(model, fields["tgt"].vocab,
-                                   train_dataset, opt, True)
+                                   text_train_dataset, opt, True)
 
     valid_loss = make_loss_compute(model, fields["tgt"].vocab,
                                    valid_dataset, opt)
+    text_valid_loss = make_loss_compute(model, fields["tgt"].vocab,
+                                   text_valid_dataset, opt)
 
     trunc_size = opt.truncated_decoder  # Badly named...
     shard_size = opt.max_generator_batches
@@ -211,35 +214,51 @@ def train_model(model, train_dataset, valid_dataset, fields,
 
     print "label:", model_opt.gen_label
     trainer = onmt.AudioTextSpeechTrainerAdv(model, train_iter, valid_iter,
-                                             text_model, text_train_iter,
+                                             text_model, text_train_iter, text_valid_iter, 
                                              speech_model, speech_train_iter,
-                                             train_loss, text_loss, valid_loss, optim,
+                                             train_loss, text_loss, valid_loss, text_valid_loss, optim,
                                              discrim_models, [model_opt.gen_label, model_opt.gen_label], model_opt.gen_lambda,  speech_lambda, 
                                              trunc_size, shard_size, data_type,
                                              model_opt.mult, model_opt.t_mult)
 
+    if opt.ff_speech_decoder:
+        trainer.ff = True
+
     speech_train_iter = make_train_data_iter(speech_train_dataset, opt, 32)
     text_train_iter = make_train_data_iter(text_train_dataset, opt, 32)
-    discrim_trainer = onmt.DiscrimTrainer(discrim_models, [speech_train_iter, text_train_iter], discrim_optims, [0.1, 0.9], shard_size)
+    discrim_trainer = onmt.DiscrimTrainer(discrim_models, [speech_train_iter, text_train_iter], [valid_iter, text_valid_iter], discrim_optims, [0.1, 0.9], shard_size)
 
     for epoch in range(opt.start_epoch, opt.epochs + 1):
         print('')
 
-        train_stats = discrim_trainer.train(epoch, discrim_report_func)
-        print('Discrim loss: %g' % train_stats.loss)
+        if epoch > 1:
+            src_valid_stats, tgt_valid_stats, st_valid_stats = discrim_trainer.validate()
+            print('(before) Discrim validation src loss: %g' % src_valid_stats.loss)
+            print('(before) Discrim validation src/tgt loss: %g' % st_valid_stats.loss)
+            print('(before) Discrim validation tgt loss: %g' % tgt_valid_stats.loss)
+        src_train_stats, tgt_train_stats = discrim_trainer.train(epoch, discrim_report_func)
+        print('Discrim src loss: %g' % src_train_stats.loss)
+        print('Discrim tgt loss: %g' % tgt_train_stats.loss)
+        src_valid_stats, tgt_valid_stats, st_valid_stats = discrim_trainer.validate()
+        print('(after) Discrim validation src loss: %g' % src_valid_stats.loss)
+        print('(after) Discrim validation src/tgt loss: %g' % st_valid_stats.loss)
+        print('(after) Discrim validation tgt loss: %g' % tgt_valid_stats.loss)
 
         # 1. Train for one epoch on the training set.
         train_stats, text_train_stats, speech_train_stats = trainer.train(epoch, report_func)
         print('Train perplexity: %g' % train_stats.ppl())
         print('Train accuracy: %g' % train_stats.accuracy())
-        #print('Text perplexity: %g' % text_train_stats.ppl())
-        #print('Text accuracy: %g' % text_train_stats.accuracy())
+        print('Text perplexity: %g' % text_train_stats.ppl())
+        print('Text accuracy: %g' % text_train_stats.accuracy())
         print('Speech MSE: %g' % speech_train_stats.loss)
 
         # 2. Validate on the validation set.
         valid_stats = trainer.validate()
         print('Validation perplexity: %g' % valid_stats.ppl())
         print('Validation accuracy: %g' % valid_stats.accuracy())
+        text_valid_stats = trainer.validate_text()
+        print('Text validation perplexity: %g' % text_valid_stats.ppl())
+        print('Text validation accuracy: %g' % text_valid_stats.accuracy())
 
         # 3. Log to remote server.
         if opt.exp_host:
@@ -312,22 +331,24 @@ def load_fields(train_dataset, valid_dataset, checkpoint, mode="audio", tgt_fiel
         data_path = opt.data
     else:
         data_path = opt.text_data
-    fields = onmt.io.load_fields_from_vocab(
-                torch.load(data_path + '.vocab.pt'), data_type)
-    fields = dict([(k, f) for (k, f) in fields.items()
-                  if k in train_dataset.examples[0].__dict__])
-
-    if tgt_fields:
-        fields['tgt'] = tgt_fields
         
-    # We save fields in vocab.pt, so assign them back to dataset here.
-    train_dataset.fields = fields
-    valid_dataset.fields = fields
-
     if opt.train_from and mode != "text":
         print('Loading vocab from checkpoint at %s.' % opt.train_from)
         fields = onmt.io.load_fields_from_vocab(
                     checkpoint['vocab'], data_type)
+    else:
+        fields = onmt.io.load_fields_from_vocab(
+            torch.load(data_path + '.vocab.pt'), data_type)
+
+        fields = dict([(k, f) for (k, f) in fields.items()
+                       if k in train_dataset.examples[0].__dict__])
+
+    if tgt_fields:
+        fields['tgt'] = tgt_fields
+
+    # We save fields in vocab.pt, so assign them back to dataset here.
+    train_dataset.fields = fields
+    valid_dataset.fields = fields
 
     if data_type == 'text' or mode == 'text':
         print(' * vocabulary size. source = %d; target = %d' %
@@ -455,12 +476,20 @@ def main():
 
     # Load fields generated from preprocess phase.
     text_fields = load_fields(text_train_dataset, text_valid_dataset, checkpoint, "text")
-    fields = load_fields(train_dataset, valid_dataset, checkpoint) #, tgt_fields=text_fields['tgt'])
     speech_fields = load_fields(speech_train_dataset, valid_dataset, checkpoint)
+    fields = load_fields(train_dataset, valid_dataset, checkpoint) #, tgt_fields=text_fields['tgt'])
     
     print(fields['tgt'].vocab.itos)
+    print(fields['tgt'].vocab.stoi)
+    print()
     print(text_fields['tgt'].vocab.itos)
-
+    print(text_fields['tgt'].vocab.stoi)
+    print()
+    fields = load_fields(train_dataset, valid_dataset, checkpoint, tgt_fields=text_fields['tgt'])
+    print(fields['tgt'].vocab.itos)
+    print(fields['tgt'].vocab.stoi)
+    print()
+    
     # Report src/tgt features.
     collect_report_features(fields)
     collect_report_features(text_fields)
@@ -483,7 +512,7 @@ def main():
 
     # Do training.
     train_model(model, train_dataset, valid_dataset, fields,
-                text_model, text_train_dataset, text_fields,
+                text_model, text_train_dataset, text_valid_dataset, text_fields,
                 speech_model, speech_train_dataset,
                 discrim_models, discrim_optims, 
                 optim, model_opt)

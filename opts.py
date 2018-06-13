@@ -10,6 +10,8 @@ def model_opts(parser):
 
     parser.add_argument('-mult', type=int, default=1,
                         help='Number of layers in the discriminator')
+    parser.add_argument('-attn_window', type=int, default=0,
+                        help='Number of layers in the discriminator')
     parser.add_argument('-t_mult', type=int, default=1,
                         help='Number of layers in the discriminator')
     parser.add_argument('-no_speech_decoder', action='store_true',
@@ -21,6 +23,10 @@ def model_opts(parser):
     parser.add_argument('-gen_lambda', type=float, default=1.,
                         help='Number of layers in the discriminator')
     parser.add_argument('-gen_label', type=float, default=0.5,
+                        help='Number of layers in the discriminator')
+    parser.add_argument('-unsup', action='store_true', default=False,
+                        help='Number of layers in the discriminator')
+    parser.add_argument('-no_adv', action='store_true', default=False,
                         help='Number of layers in the discriminator')
 
     # discriminator
@@ -92,6 +98,11 @@ def model_opts(parser):
     group.add_argument('-cnn_kernel_width', type=int, default=3,
                        help="""Size of windows in the cnn, the kernel_size is
                        (cnn_kernel_width, 1) in conv layer""")
+
+    group.add_argument('-ff_speech_decoder', action='store_true', default=False,
+                       help="Create dynamic dictionaries")
+    group.add_argument('-conv_global_encoder', action='store_true', default=False,
+                       help="Create dynamic dictionaries")
 
     group.add_argument('-input_feed', type=int, default=1,
                        help="""Feed the context vector at each time step as
@@ -238,6 +249,11 @@ def train_opts(parser):
                        help="""Model filename (the model will be saved as
                        <save_model>_epochN_PPL.pt where PPL is the
                        validation perplexity""")
+    group.add_argument('-delete_rate', type=float, default=0.1,
+                       help="""Parameters are initialized over uniform distribution
+                       with support (-param_init, param_init).
+                       Use 0 to not use initialization""")
+
     # GPU
     group.add_argument('-gpuid', default=[], nargs='+', type=int,
                        help="Use CUDA on the listed devices.")
@@ -288,7 +304,7 @@ def train_opts(parser):
     group.add_argument('-epochs', type=int, default=13,
                        help='Number of training epochs')
     group.add_argument('-optim', default='sgd',
-                       choices=['sgd', 'adagrad', 'adadelta', 'adam'],
+                       choices=['sgd', 'asgd', 'adagrad', 'adadelta', 'adam'],
                        help="""Optimization method.""")
     group.add_argument('-adagrad_accumulator_init', type=float, default=0,
                        help="""Initializes the accumulator values in adagrad.
@@ -334,12 +350,23 @@ def train_opts(parser):
                        help="""Starting learning rate.
                        Recommended settings: sgd = 1, adagrad = 0.1,
                        adadelta = 1, adam = 0.001""")
+    group.add_argument('-momentum', type=float, default=0,
+                       help="""Starting learning rate.
+                       Recommended settings: sgd = 1, adagrad = 0.1,
+                       adadelta = 1, adam = 0.001""")
+    group.add_argument('-nesterov', action='store_true', default=False,
+                       help="""Starting learning rate.
+                       Recommended settings: sgd = 1, adagrad = 0.1,
+                       adadelta = 1, adam = 0.001""")
     group.add_argument('-learning_rate_decay', type=float, default=0.5,
                        help="""If update_learning_rate, decay learning rate by
                        this much if (i) perplexity does not decrease on the
                        validation set or (ii) epoch has gone past
                        start_decay_at""")
     group.add_argument('-start_decay_at', type=int, default=8,
+                       help="""Start decaying every epoch after and including this
+                       epoch""")
+    group.add_argument('-decay_every', type=int, default=1,
                        help="""Start decaying every epoch after and including this
                        epoch""")
     group.add_argument('-start_checkpoint_at', type=int, default=0,
@@ -371,6 +398,9 @@ def translate_opts(parser):
     group.add_argument('-model', required=True,
                        help='Path to model .pt file')
 
+    group.add_argument('-useLM', action="store_true", default=False,
+                       help='Print scores and predictions for each sentence')
+
     group = parser.add_argument_group('Data')
     group.add_argument('-data_type', default="text",
                        help="Type of the source input. Options: [text|img].")
@@ -382,9 +412,16 @@ def translate_opts(parser):
                        help='Source directory for image or audio files')
     group.add_argument('-tgt',
                        help='True target sequence (optional)')
+    group.add_argument('-text_src',
+                       help='True target sequence (optional)')
+    group.add_argument('-vocab',
+                       help='True target sequence (optional)')
     group.add_argument('-output', default='pred.txt',
                        help="""Path to output the predictions (each line will
                        be the decoded sequence""")
+    group.add_argument('-report_attn', type=int, default=-1, nargs='+',
+                       help="""Report bleu score after translation,
+                       call tools/multi-bleu.perl on command line""")
     group.add_argument('-report_bleu', action='store_true',
                        help="""Report bleu score after translation,
                        call tools/multi-bleu.perl on command line""")

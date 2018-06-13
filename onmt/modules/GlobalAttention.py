@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 
 from onmt.modules.UtilClass import BottleLinear
-from onmt.Utils import aeq, sequence_mask
+from onmt.Utils import aeq, sequence_mask, sequence_mask_window
 
 
 class GlobalAttention(nn.Module):
@@ -126,7 +126,7 @@ class GlobalAttention(nn.Module):
 
             return self.v(wquh.view(-1, dim)).view(tgt_batch, tgt_len, src_len)
 
-    def forward(self, input, context, context_lengths=None, coverage=None):
+    def forward(self, input, context, context_lengths=None, coverage=None, start=None):
         """
 
         Args:
@@ -169,7 +169,11 @@ class GlobalAttention(nn.Module):
         align = self.score(input, context)
 
         if context_lengths is not None:
-            mask = sequence_mask(context_lengths)
+            if start is not None:
+                mask = sequence_mask_window(start, context_lengths, max_len=sourceL)
+                print mask.size()
+            else:
+                mask = sequence_mask(context_lengths)
             mask = mask.unsqueeze(1)  # Make it broadcastable.
             align.data.masked_fill_(1 - mask, -float('inf'))
 
