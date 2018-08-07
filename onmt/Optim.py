@@ -132,10 +132,14 @@ class Optim(object):
             print("Decaying learning rate to %g" % self.lr)
         '''
 
+    
         if self.start_decay_at is not None:
-            if epoch >= self.start_decay_at and epoch % self.decay_every == 0:
-                self.lr = self.lr * self.lr_decay
-                print("Decaying learning rate to %g" % self.lr)
+            try:
+                if epoch >= self.start_decay_at and epoch % self.decay_every == 0:
+                    self.lr = self.lr * self.lr_decay
+                    print("Decaying learning rate to %g" % self.lr)
+            except:
+                print "no decay_every set -- not decaying"
             
         self.last_ppl = ppl
         self.optimizer.param_groups[0]['lr'] = self.lr

@@ -209,10 +209,10 @@ class Translator(object):
                 #out = shifted - shifted.exp().sum(dim=2, keepdim=True).log()
                 #print "AM+LM:", out[:, 0, :].max(dim=1)[1]
                 
-            out = out + self.gamma*i
-            #print "AM+LM+len:", out[:, 0, :].max(dim=1)[1]
-            #print "COMBINED:", out[0, 0, :]
-            #print 
+                out = out + self.gamma*i
+                #print "AM+LM+len:", out[:, 0, :].max(dim=1)[1]
+                #print "COMBINED:", out[0, 0, :]
+                #print 
             
             # (c) Advance each beam.
             updated_lm_states = []

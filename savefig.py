@@ -35,19 +35,30 @@ mpl.rcParams.update({'font.size': 18})
 saveBaseline = False
 saveLM = False
 saveLMCompare = True
-saveCompare = False
+saveCompare = True
 
 hrs = np.array([2.5, 5, 10, 20, 40, 80])
 cer_base = np.array([83.4, 31.4, 16.4, 11.3, 7.8, 5.8])
 wer_base = np.array([96.6, 62.2, 39.5, 30.0, 21.6, 16.6])
 wer_base_lm = np.array([96.9, 56.7, 29.3, 21.2, 13.7, 10.5])
+cer_base_lm = np.array([80.7, 34.3, 14.5, 9.5, 6.1, 4.5])
+
+cer_mine = np.array([62.0, 25.8, 14.8])
+wer_mine = np.array([87.4, 53.0, 37.4])
+wer_mine_lm = np.array([96.1, 41.5, 25.8])
+cer_mine_lm = np.array([77.4, 23.1, 12.9])
 
 cer_adv = np.array([42.0, 21.7, 16.6])
 wer_adv = np.array([69.0, 47.6, 38.4])
 
 cer_full = np.array([32.9, 19.8, 14.8])
 wer_full = np.array([62.7, 45.8, 36.0])
-wer_full_lm = np.array([57.8, 35.5, 24.3])
+wer_full_lm = np.array([57.8, 35.5, 24.9])
+
+cer_full_better = np.array([34.6, 21.4, 13.7])
+wer_full_better = np.array([64.6, 47.8, 35.9])
+wer_full_better_lm = np.array([56.4, 35.0, 24.9])
+cer_full_better_lm = np.array([36.1, 18.4, 12.5])
 
 wer_lm_adv = np.array([0, 47.1, 41.4])
 wer_lm_adv_lm = np.array([0, 33.9, 28.5])
@@ -111,26 +122,80 @@ if saveLM:
 
 if saveLMCompare:
 
-    bar_width=0.2
+    bar_width=0.25
 
     plt.figure()
     _, ax = plt.subplots()
-    ax.bar(np.arange(3), wer_base[:3], bar_width, color='b', label='Baseline')
-    ax.bar(np.arange(3)+bar_width, wer_base_lm[:3], bar_width, color='g', label='Baseline + LM')
-    ax.bar(np.arange(3)+2*bar_width, wer_lm_adv, bar_width, color='r', label='Proposed')
-    ax.bar(np.arange(3)+3*bar_width, wer_lm_adv_lm, bar_width, color='m', label='Proposed + LM')
-    ax.set_xticks(np.arange(3) + 2 * bar_width)
+    
+    ax.bar(np.arange(3)+bar_width/2, wer_base_lm[:3], bar_width, color='b', alpha=0.6, label='Baseline')
+    ax.bar(np.arange(3)+bar_width/2+bar_width, wer_mine_lm, bar_width, color='g', alpha=0.6, label='Proposed')
+    ax.bar(np.arange(3)+bar_width/2+2*bar_width, wer_full_better_lm, bar_width, color='r', alpha=0.6, label='Semi-Supervised')
+
+    rects = ax.patches
+
+    ax.bar(np.arange(3)+bar_width/2, wer_base[:3], bar_width, color='b', alpha=0.3)
+    ax.bar(np.arange(3)+bar_width+bar_width/2, wer_mine, bar_width, color='g', alpha=0.3)
+    ax.bar(np.arange(3)+2*bar_width+bar_width/2, wer_full_better, bar_width, color='r', alpha=0.3)
+
+    #labels = [(wer_base_lm[0] - wer_base[0])/wer_base[0], (wer_base_lm[1] - wer_base[1])/wer_base[1], (wer_base_lm[2] - wer_base[2])/wer_base[2],
+    #          (wer_mine_lm[0] - wer_mine[0])/wer_mine[0], (wer_mine_lm[1] - wer_mine[1])/wer_mine[1], (wer_mine_lm[2] - wer_mine[2])/wer_mine[2],
+    #          (wer_full_lm[0] - wer_full[0])/wer_full[0], (wer_full_lm[1] - wer_full[1])/wer_full[1], (wer_full_lm[2] - wer_full[2])/wer_full[2]]
+    #labels = [(wer_base_lm[0] - wer_base[0]), (wer_base_lm[1] - wer_base[1]), (wer_base_lm[2] - wer_base[2]),
+    #          (wer_mine_lm[0] - wer_mine[0]), (wer_mine_lm[1] - wer_mine[1]), (wer_mine_lm[2] - wer_mine[2]),
+    #          (wer_full_lm[0] - wer_full[0]), (wer_full_lm[1] - wer_full[1]), (wer_full_lm[2] - wer_full[2])] 
+    labels = np.concatenate((wer_base_lm[:3], wer_mine_lm, wer_full_better_lm))
+   
+    for rect, label in zip(rects, labels):
+        height = rect.get_height()
+        print height
+        ax.text(rect.get_x() + rect.get_width() / 2, height, '{:.1f}'.format(label),
+                ha='center', va='bottom', fontsize=14)
+
+    plt.axis([0, 2.75, 0, 105])
+    ax.set_xticks(np.arange(3) + 3 * bar_width / 2)
     ax.set_xticklabels(('2.5', '5', '10'))
     ax.legend()
     plt.xlabel('Hours of transcribed speech')
     plt.ylabel('Word error rate (WER)')
-    plt.savefig('compareLMtoMine.png')
+    plt.tight_layout()
+    plt.savefig('compareLMtoMine_better.png')
+    
+    plt.figure()
+    _, ax = plt.subplots()
+    
+    ax.bar(np.arange(3)+bar_width/2, cer_base_lm[:3], bar_width, color='b', alpha=0.6, label='Baseline')
+    ax.bar(np.arange(3)+bar_width+bar_width/2, cer_mine_lm, bar_width, color='g', alpha=0.6, label='Proposed')
+    ax.bar(np.arange(3)+2*bar_width+bar_width/2, cer_full_better_lm, bar_width, color='r', alpha=0.6, label='Semi-Supervised')
+
+    rects = ax.patches
+
+    ax.bar(np.arange(3)+bar_width/2, cer_base[:3], bar_width, color='b', alpha=0.3)
+    ax.bar(np.arange(3)+bar_width+bar_width/2, cer_mine, bar_width, color='g', alpha=0.3)
+    ax.bar(np.arange(3)+2*bar_width+bar_width/2, cer_full_better, bar_width, color='r', alpha=0.3)
+
+    labels = np.concatenate((cer_base_lm[:3], cer_mine_lm, cer_full_better_lm))
+   
+    for rect, label in zip(rects, labels):
+        height = rect.get_height()
+        print height
+        ax.text(rect.get_x() + rect.get_width() / 2, height, '{:.1f}'.format(label),
+                ha='center', va='bottom', fontsize=14)
+
+    plt.axis([0, 2.75, 0, 90])
+    ax.set_xticks(np.arange(3) + 3 * bar_width / 2)
+    ax.set_xticklabels(('2.5', '5', '10'))
+    ax.legend()
+    plt.xlabel('Hours of transcribed speech')
+    plt.ylabel('Character error rate (CER)')
+    plt.tight_layout()
+    plt.savefig('compareLMtoMine_cer.png')
 
 if saveCompare:
+    '''
     plt.figure()
     _, ax = plt.subplots()
     plt.plot(hrs[:3], wer_base[:3], label='Baseline')
-    plt.plot(hrs[:3], wer_adv, label='Simple Model')
+    plt.plot(hrs[:3], wer_mine, label='Simple Model')
     plt.plot(hrs[:3], wer_full, label='Complete Model')
     plt.axis([2, 12, 0, 100])
     plt.xscale('log')
@@ -140,11 +205,11 @@ if saveCompare:
     plt.xlabel('Hours of transcribed speech')
     plt.ylabel('Word error rate (WER)')
     plt.savefig('compare.png')
-
+    
     plt.figure()
     _, ax = plt.subplots()
     plt.plot(hrs[:3], cer_base[:3], label='Baseline')
-    plt.plot(hrs[:3], cer_adv, label='Simple Model')
+    plt.plot(hrs[:3], cer_mine, label='Simple Model')
     plt.plot(hrs[:3], cer_full, label='Complete Model')
     plt.axis([2, 12, 0, 100])
     plt.xscale('log')
@@ -154,21 +219,59 @@ if saveCompare:
     plt.xlabel('Hours of transcribed speech')
     plt.ylabel('Character error rate (CER)')
     plt.savefig('compare_cer.png')
-
+    '''
     plt.figure()
     bar_width = 0.25
     _, ax = plt.subplots()
-    ax.bar(np.arange(3), wer_base[:3], bar_width, color='b', alpha=0.3, label='Baseline')
-    ax.bar(np.arange(3)+bar_width, wer_adv, bar_width, color='g', alpha=0.3, label='Simplified Model [2]')
-    ax.bar(np.arange(3)+2*bar_width, wer_full, bar_width, color='r', alpha=0.3, label='Proposed Full Model')
-    #plt.axis([2, 12, 0, 100])
+    
+    ax.bar(np.arange(3)+bar_width/2, wer_base[:3], bar_width, color='b', alpha=0.6, label='Baseline')
+    ax.bar(np.arange(3)+bar_width+bar_width/2, wer_mine, bar_width, color='g', alpha=0.6, label='Proposed')
+    ax.bar(np.arange(3)+2*bar_width+bar_width/2, wer_full_better, bar_width, color='r', alpha=0.6, label='Semi-Supervised')
+    plt.axis([0, 2.75, 0, 105])
+    rects = ax.patches
+    labels = np.concatenate((wer_base[:3], wer_mine, wer_full_better))
+    
+    print labels
+    for rect, label in zip(rects, labels):
+        height = rect.get_height()
+        print height
+        ax.text(rect.get_x() + rect.get_width() / 2, height, '{:.1f}'.format(label),
+                ha='center', va='bottom', fontsize=14)
+
     ax.set_xticks(np.arange(3) + 3 * bar_width / 2)
     ax.set_xticklabels(('2.5', '5', '10'))
     ax.legend()
     plt.xlabel('Hours of transcribed speech')
     plt.ylabel('Word error rate (WER)')
-    plt.savefig('compare_bar.png')
+    plt.tight_layout()
+    plt.savefig('compare_bar_better.png')
 
+    plt.figure()
+    bar_width = 0.25
+    _, ax = plt.subplots()
+    
+    ax.bar(np.arange(3)+bar_width/2, cer_base[:3], bar_width, color='b', alpha=0.6, label='Baseline')
+    ax.bar(np.arange(3)+bar_width/2+bar_width, cer_mine, bar_width, color='g', alpha=0.6, label='Proposed')
+    ax.bar(np.arange(3)+bar_width/2+2*bar_width, cer_full_better, bar_width, color='r', alpha=0.6, label='Semi-Supervised')
+    plt.axis([0, 2.75, 0, 90])
+    rects = ax.patches
+    labels = np.concatenate((cer_base[:3], cer_mine, cer_full_better))
+    
+    print labels
+    for rect, label in zip(rects, labels):
+        height = rect.get_height()
+        print height
+        ax.text(rect.get_x() + rect.get_width() / 2, height, '{:.1f}'.format(label),
+                ha='center', va='bottom', fontsize=14)
+
+    ax.set_xticks(np.arange(3) + 3 * bar_width / 2)
+    ax.set_xticklabels(('2.5', '5', '10'))
+    ax.legend()
+    plt.xlabel('Hours of transcribed speech')
+    plt.ylabel('Character error rate (CER)')
+    plt.tight_layout()
+    plt.savefig('compare_bar_cer.png')
+    '''
     plt.figure()
     bar_width = 0.25
     _, ax = plt.subplots()
@@ -196,7 +299,8 @@ if saveCompare:
     plt.xlabel('Hours of transcribed speech')
     plt.ylabel('Character error rate (CER)')
     plt.savefig('compare_cer_bar.png')
-
+    '''
+    
 '''
 plt.figure()
 _, ax = plt.subplots()

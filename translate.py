@@ -113,7 +113,10 @@ def main():
                                            copy_attn=model_opt.copy_attn,
                                            cuda=opt.cuda,
                                            beam_trace=opt.dump_beam != "",
-                                           min_length=opt.min_length)
+                                           min_length=opt.min_length,
+                                           alpha=opt.LMalpha,
+                                           beta=opt.LMbeta,
+                                           gamma=opt.LMgamma)
     builder = onmt.translate.TranslationBuilder(
         data, translator.fields,
         opt.n_best, opt.replace_unk, opt.tgt)
@@ -162,7 +165,7 @@ def main():
                     if opt.data_type == "text":
                         plt.figure(figsize=(50, 50), dpi=1000)
                         _, ax = plt.subplots()
-                        plt.imshow(attn, aspect=0.5) #, extent=)
+                        plt.imshow(attn, aspect=0.5, cmap='plasma') #, extent=)
                         maxY = attn.shape[0]
                         plt.yticks(range(0, maxY))
                         ticklabels = [" " if x == "SPACE" else x for x in trans.gold_sent]
@@ -170,7 +173,7 @@ def main():
                     else:
                         plt.figure(figsize=(1, 4), dpi=100)
                         _, ax = plt.subplots()
-                        plt.imshow(attn, aspect=0.15) #, extent=)
+                        plt.imshow(attn, aspect=0.15, cmap='plasma') #, extent=)
                         maxY = attn.shape[0]
                         plt.yticks(range(0, maxY+1, 10))
                         ax.yaxis.set_ticklabels(range(0, maxY+1, 10))
@@ -181,8 +184,11 @@ def main():
                         print "LABELS!", ticklabels
                     ax.xaxis.set_ticklabels(ticklabels)
     
-                    #plt.colorbar()
-                    plt.savefig("attn" + str(sent_number) + "_" + opt.model + ".png", dpi=1000)
+                    plt.colorbar()
+                    if opt.useLM:
+                        plt.savefig("attn" + str(sent_number) + "_lm_" + opt.model + ".png", dpi=1000)
+                    else:
+                        plt.savefig("attn" + str(sent_number) + "_" + opt.model + ".png", dpi=1000)
 
     _report_score('PRED', pred_score_total, pred_words_total)
     if opt.tgt:

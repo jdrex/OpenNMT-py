@@ -3,6 +3,8 @@ log.*
 test.pred*
 val.pred*
 *.png
+*.ark
+*.pt
 
 # repo-specific stuff
 pred.txt

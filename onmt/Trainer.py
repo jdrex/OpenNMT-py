@@ -64,25 +64,38 @@ class Statistics(object):
            start (int): start time of epoch.
         """
         t = self.elapsed_time()
-        print(("Epoch %2d, %5d/%5d; acc: %6.2f; ppl: %6.2f; " +
-               "%3.0f src tok/s; %3.0f tgt tok/s; %6.0f s elapsed") %
-              (epoch, batch,  n_batches,
-               self.accuracy(),
-               self.ppl(),
-               self.n_src_words / (t + 1e-5),
-               self.n_words / (t + 1e-5),
-               time.time() - start))
-        sys.stdout.flush()
-
+        try:
+            print(("Epoch %2d, %5d/%5d; acc: %6.2f; ppl: %6.2f; " +
+                   "%3.0f src tok/s; %3.0f tgt tok/s; %6.0f s elapsed") %
+                  (epoch, batch,  n_batches,
+                   self.accuracy(),
+                   self.ppl(),
+                   self.n_src_words / (t + 1e-5),
+                   self.n_words / (t + 1e-5),
+                   time.time() - start))
+            sys.stdout.flush()
+        except:
+            self.output_loss(epoch, batch, n_batches, start)
+            
     def output_loss(self, epoch, batch, n_batches, start):
         t = self.elapsed_time()
-        print(("Epoch %2d, %5d/%5d; loss: %6.2f; " +
-               "%3.0f src tok/s; %3.0f tgt tok/s; %6.0f s elapsed") %
-              (epoch, batch,  n_batches,
-               self.loss,
-               self.n_src_words / (t + 1e-5),
-               self.n_words / (t + 1e-5),
-               time.time() - start))
+        try:
+            print(("Epoch %2d, %5d/%5d; loss: %6.2f; " +
+                   "%3.0f src tok/s; %3.0f tgt tok/s; %6.0f s elapsed") %
+                  (epoch, batch,  n_batches,
+                   self.loss,
+                   self.n_src_words / (t + 1e-5),
+                   self.n_words / (t + 1e-5),
+                   time.time() - start))
+        except:
+            print(("Epoch %2d, %5d/%5d; loss: %6.2f; " +
+                   "%3.0f src tok/s; %3.0f tgt tok/s; %6.0f s elapsed") %
+                  (epoch, batch,  n_batches,
+                   0.,
+                   self.n_src_words / (t + 1e-5),
+                   self.n_words / (t + 1e-5),
+                   time.time() - start))
+
         sys.stdout.flush()
 
     def log(self, prefix, experiment, lr):
@@ -867,7 +880,7 @@ class AudioTextSpeechTrainerAdv(AudioTextTrainer):
             self.discrim_models[0].train()
             self.discrim_models[1].train()
         
-    def train(self, epoch, report_func=None, batch_override=-1, text=None):
+    def train(self, epoch, report_func=None, batch_override=-1, text=None, startMask=0, endMask=0, advOnly=False):
         """ Train next epoch.
         Args:
             epoch(int): the epoch number
@@ -904,18 +917,19 @@ class AudioTextSpeechTrainerAdv(AudioTextTrainer):
         for i in range(nBatches):
             print "batch:", i
             if self.sup:
-                self.process_batch(asr_batches[i], self.model, "audio", None, self.labels[0], report_stats, total_stats)
+                self.process_batch(asr_batches[i], self.model, "audio", None, self.labels[0], report_stats, total_stats, advOnly=advOnly)
             for j in range(multiplier):
                 print " speech:", i*multiplier + j
                 try:
-                    self.process_speech(speech_batches[i*multiplier + j], self.speech_model, self.discrim_models[0], self.labels[0], speech_total_stats)
+                    self.process_speech(speech_batches[i*multiplier + j], self.speech_model, self.discrim_models[0], self.labels[0], speech_total_stats, startMask, endMask, advOnly)
                 except:
                     print "speech out of range"
                 for k in range(tMultiplier):
                     print " text:", i*multiplier*tMultiplier + j*tMultiplier + k
                     try:
-                    #self.process_batch(text_batches[i*multiplier + j*tMultiplier + k], self.text_model, "text",  None, self.labels[1], report_stats, text_total_stats)
-                        self.process_batch(text_batches[i*multiplier + j*tMultiplier + k], self.text_model, "text",  self.discrim_models[1], self.labels[1], report_stats, text_total_stats)
+                        #self.process_batch(text_batches[i*multiplier + j*tMultiplier + k], self.text_model, "text",  None, self.labels[1], report_stats, text_total_stats)
+                        self.process_batch(text_batches[i*multiplier + j*tMultiplier + k], self.text_model, "text",  self.discrim_models[1], self.labels[1], report_stats, text_total_stats,
+                                           startMask, endMask)
                     except:
                         print "text out of range"
                 #try:
@@ -930,10 +944,7 @@ class AudioTextSpeechTrainerAdv(AudioTextTrainer):
 
         return total_stats, text_total_stats, speech_total_stats
 
-    def process_batch(self, batch, model, data_type, discrim_model, label, report_stats, total_stats):
-        target_size = batch.tgt.size(0)
-        # Truncated BPTT
-        trunc_size = self.trunc_size if self.trunc_size else target_size
+    def process_batch(self, batch, model, data_type, discrim_model, label, report_stats, total_stats, startMask=0, endMask=0, advOnly=False):
 
         dec_state = None
         src = onmt.io.make_features(batch, 'src', data_type)
@@ -946,33 +957,38 @@ class AudioTextSpeechTrainerAdv(AudioTextTrainer):
             src_lengths = None
             loss = self.train_loss
 
-        tgt_outer = onmt.io.make_features(batch, 'tgt')
-        #print "tgt:", batch.tgt[:, 0]
-        #print "features:", tgt_outer[:, 0]
+        if not advOnly:
+            target_size = batch.tgt.size(0)
+            # Truncated BPTT
+            trunc_size = self.trunc_size if self.trunc_size else target_size
+            tgt_outer = onmt.io.make_features(batch, 'tgt')
+            #print "tgt:", batch.tgt[:, 0]
+            #print "features:", tgt_outer[:, 0]
         
-        for j in range(0, target_size-1, trunc_size):
-            # 1. Create truncated target.
-            tgt = tgt_outer[j: j + trunc_size]
+            for j in range(0, target_size-1, trunc_size):
+                # 1. Create truncated target.
+                tgt = tgt_outer[j: j + trunc_size]
 
-            # 2. F-prop all but generator.
+                # 2. F-prop all but generator.
+                model.zero_grad()
+                outputs, attns, dec_state = model(src, tgt, src_lengths, dec_state)
+
+                # 3. Compute loss in shards for memory efficiency.
+                batch_stats = loss.sharded_compute_loss(
+                    batch, outputs, attns, j,
+                    trunc_size, self.shard_size)
+
+                # 4. Update the parameters and statistics.
+                self.optim.step()
+                total_stats.update(batch_stats)
+                report_stats.update(batch_stats)
+
+                # If truncated, don't backprop fully.
+                if dec_state is not None:
+                    dec_state.detach()
+
             model.zero_grad()
-            outputs, attns, dec_state = model(src, tgt, src_lengths, dec_state)
-
-            # 3. Compute loss in shards for memory efficiency.
-            batch_stats = loss.sharded_compute_loss(
-                batch, outputs, attns, j,
-                trunc_size, self.shard_size)
-
-            # 4. Update the parameters and statistics.
-            self.optim.step()
-            total_stats.update(batch_stats)
-            report_stats.update(batch_stats)
-
-            # If truncated, don't backprop fully.
-            if dec_state is not None:
-                dec_state.detach()
-
-        model.zero_grad()
+            
         if discrim_model is None:
             return report_stats, total_stats
 
@@ -988,6 +1004,7 @@ class AudioTextSpeechTrainerAdv(AudioTextTrainer):
             src_labels = src.squeeze().sum(1)[:, 0:-1:8].data.cpu().numpy()
             w = np.zeros(src_labels.shape)
             w[src_labels != 0.] = self.gen_lambda
+            w[:, :startMask] = 0
             weights = torch.cuda.FloatTensor(w)
 
         self.criterion.weight = weights.view(-1,1)[:outputs.size()[0], :]
@@ -1005,7 +1022,7 @@ class AudioTextSpeechTrainerAdv(AudioTextTrainer):
         
         return report_stats, total_stats
 
-    def process_speech(self, batch, model, discrim_model, label, total_stats):
+    def process_speech(self, batch, model, discrim_model, label, total_stats, startMask, endMask, advOnly=False):
         # Truncated BPTT
 
         dec_state = None
@@ -1013,7 +1030,7 @@ class AudioTextSpeechTrainerAdv(AudioTextTrainer):
         src_lengths = None
         #print batch.src.size(), target_size
 
-        if model is not None:
+        if model is not None and not advOnly:
             tgt_outer = onmt.io.make_features(batch, 'src', "audio")[:, :, :, :1400]
             tgt_outer = tgt_outer.squeeze()
             try:
@@ -1072,6 +1089,7 @@ class AudioTextSpeechTrainerAdv(AudioTextTrainer):
             src_labels = src.squeeze().sum(1)[:, 0:-1:8].data.cpu().numpy()
             w = np.zeros(src_labels.shape)
             w[src_labels != 0.] = self.gen_lambda
+            w[:, :startMask] = 0
             weights = torch.cuda.FloatTensor(w)
 
         self.criterion.weight = weights.view(-1,1)[:outputs.size()[0], :]

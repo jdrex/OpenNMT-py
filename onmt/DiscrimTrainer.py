@@ -52,7 +52,7 @@ class DiscrimTrainer(object):
         # Set model in training mode.
         self.src_model.train()
 
-    def train(self, epoch, report_func=None, batch_override=-1, text=None):
+    def train(self, epoch, report_func=None, batch_override=-1, text=None, attnMask=False, startMask=0, endMask=0):
         """ Called for each epoch to train. """
         src_total_stats = Statistics()
         tgt_total_stats = Statistics()
@@ -89,6 +89,8 @@ class DiscrimTrainer(object):
             labels = Variable(torch.cuda.FloatTensor(l).view(-1,1))
             w = np.zeros(src_labels.shape)
             w[src_labels != 0.] = 1.
+            if startMask > 0:
+                w[:, :startMask] = 0
             weights = torch.cuda.FloatTensor(w)
             #print src_labels.shape, w.shape, weights.size()
             self.criterion.weight = weights.view(-1,1)[:outputs.size()[0], :]

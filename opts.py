@@ -253,6 +253,14 @@ def train_opts(parser):
                        help="""Parameters are initialized over uniform distribution
                        with support (-param_init, param_init).
                        Use 0 to not use initialization""")
+    group.add_argument('-start_mask', type=int, default=0,
+                       help="""Parameters are initialized over uniform distribution
+                       with support (-param_init, param_init).
+                       Use 0 to not use initialization""")
+    group.add_argument('-end_mask', type=int, default=0,
+                       help="""Parameters are initialized over uniform distribution
+                       with support (-param_init, param_init).
+                       Use 0 to not use initialization""")
 
     # GPU
     group.add_argument('-gpuid', default=[], nargs='+', type=int,
@@ -400,6 +408,12 @@ def translate_opts(parser):
 
     group.add_argument('-useLM', action="store_true", default=False,
                        help='Print scores and predictions for each sentence')
+    group.add_argument('-LMalpha', type=float, default=1.,
+                       help="Window size for spectrogram in seconds.")
+    group.add_argument('-LMbeta', type=float, default=0.5,
+                       help="Window size for spectrogram in seconds.")
+    group.add_argument('-LMgamma', type=float, default=1.,
+                       help="Window size for spectrogram in seconds.")
 
     group = parser.add_argument_group('Data')
     group.add_argument('-data_type', default="text",

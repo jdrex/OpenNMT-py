@@ -192,7 +192,10 @@ def train_model(model, train_dataset, valid_dataset, fields,
     text_valid_iter = make_valid_data_iter(text_valid_dataset, opt)
 
     text_train_iter = make_train_data_iter(text_train_dataset, opt)
-    text_train_iter.dR = model_opt.delete_rate
+    try:
+        text_train_iter.dR = model_opt.delete_rate
+    except:
+        text_train_iter.dR = 0.2
         
     speech_train_iter = make_train_data_iter(speech_train_dataset, opt)
 
@@ -237,8 +240,12 @@ def train_model(model, train_dataset, valid_dataset, fields,
     if not opt.no_adv:
         speech_train_iter = make_train_data_iter(speech_train_dataset, opt, 32)
         text_train_iter = make_train_data_iter(text_train_dataset, opt, 32)
-        text_train_iter.dR = model_opt.delete_rate
-        discrim_trainer = onmt.DiscrimTrainer(discrim_models, [speech_train_iter, text_train_iter], [valid_iter, text_valid_iter], discrim_optims, [0.1, 0.9], shard_size, big_text)
+        try:
+            text_train_iter.dR = model_opt.delete_rate
+        except:
+            text_train_iter.dR = 0.2
+        discrim_trainer = onmt.DiscrimTrainer(discrim_models, [speech_train_iter, text_train_iter], [valid_iter, text_valid_iter],
+                                              discrim_optims, [0.1, 0.9], shard_size, big_text)
 
     if model_opt.unsup:
         override = 50
@@ -248,6 +255,14 @@ def train_model(model, train_dataset, valid_dataset, fields,
         override = 2000
         print("OVERRIDE: " + str(override))
 
+    try:
+        model_opt.start_mask = max(0, model_opt.start_mask)
+    except AttributeError:
+        model_opt.start_mask = 0
+        model_opt.end_mask = 0
+
+    advOnly = False
+    
     if big_text:
         nText = len(glob.glob(opt.text_data + '.train.[0-9]*.pt'))
         text_idx = opt.start_epoch % nText
@@ -274,9 +289,9 @@ def train_model(model, train_dataset, valid_dataset, fields,
             if big_text:
                 text_train_iter = make_train_data_iter(text_train_dataset, opt, 32)
                 text_train_iter.dR = model_opt.delete_rate
-                src_train_stats, tgt_train_stats = discrim_trainer.train(epoch, discrim_report_func, text=text_train_iter) #, override)
+                src_train_stats, tgt_train_stats = discrim_trainer.train(epoch, discrim_report_func, text=text_train_iter, startMask=model_opt.start_mask, endMask=model_opt.end_mask) #, override)
             else:
-                src_train_stats, tgt_train_stats = discrim_trainer.train(epoch, discrim_report_func) #, override)
+                src_train_stats, tgt_train_stats = discrim_trainer.train(epoch, discrim_report_func, startMask=model_opt.start_mask, endMask=model_opt.end_mask) #, override)
             print('Discrim src loss: %g' % src_train_stats.loss)
             print('Discrim tgt loss: %g' % tgt_train_stats.loss)
             src_valid_stats, tgt_valid_stats, st_valid_stats = discrim_trainer.validate()
@@ -288,14 +303,16 @@ def train_model(model, train_dataset, valid_dataset, fields,
         if big_text:
             text_train_iter = make_train_data_iter(text_train_dataset, opt)
             text_train_iter.dR = model_opt.delete_rate
-            train_stats, text_train_stats, speech_train_stats = trainer.train(epoch, report_func, override, text=text_train_iter)
+            train_stats, text_train_stats, speech_train_stats = trainer.train(epoch, report_func, override, text=text_train_iter,
+                                                                              startMask=model_opt.start_mask, endMask=model_opt.end_mask, advOnly=advOnly)
         else:
-            train_stats, text_train_stats, speech_train_stats = trainer.train(epoch, report_func, override)
-        if not opt.unsup:
+            train_stats, text_train_stats, speech_train_stats = trainer.train(epoch, report_func, override, startMask=model_opt.start_mask, endMask=model_opt.end_mask, advOnly=advOnly)
+        if not opt.unsup and not advOnly:
             print('Train perplexity: %g' % train_stats.ppl())
             print('Train accuracy: %g' % train_stats.accuracy())
-        print('Text perplexity: %g' % text_train_stats.ppl())
-        print('Text accuracy: %g' % text_train_stats.accuracy())
+        if not advOnly:
+            print('Text perplexity: %g' % text_train_stats.ppl())
+            print('Text accuracy: %g' % text_train_stats.accuracy())
         try:
             print('Speech MSE: %g' % speech_train_stats.loss)
         except:
