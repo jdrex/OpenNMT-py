@@ -84,7 +84,7 @@ class DiscrimTrainer(object):
             #print src.size(), src_labels.shape
             
             self.src_model.zero_grad()
-            outputs = self.src_model(src, None)
+            outputs, _ = self.src_model(src, None)
             l = [self.src_label]*outputs.size()[0]
             labels = Variable(torch.cuda.FloatTensor(l).view(-1,1))
             w = np.zeros(src_labels.shape)
@@ -125,7 +125,7 @@ class DiscrimTrainer(object):
 
             self.tgt_model.zero_grad()
             try:
-                outputs = self.tgt_model(src, src_lengths)
+                outputs, _ = self.tgt_model(src, src_lengths)
             except:
                 print src_lengths
                 raise
@@ -211,7 +211,7 @@ class DiscrimTrainer(object):
             src_labels = src.squeeze().sum(1)[:, 0:-1:8].data.cpu().numpy()
             #print src.size(), src_labels.shape
 
-            outputs = self.src_model(src, None)
+            outputs, _ = self.src_model(src, None)
             l = [self.src_label]*outputs.size()[0]
             labels = Variable(torch.cuda.FloatTensor(l).view(-1,1))
             w = np.zeros(src_labels.shape)
@@ -237,7 +237,7 @@ class DiscrimTrainer(object):
             tgt = onmt.io.make_features(batch, 'src')
             #print src.size(), src_labels.shape
 
-            outputs = self.tgt_model(tgt, tgt_lengths)
+            outputs, _ = self.tgt_model(tgt, tgt_lengths)
             l = [self.tgt_label]*outputs.size()[0]
             labels = Variable(torch.cuda.FloatTensor(l).view(-1,1))
             weights = torch.cuda.FloatTensor(tgt.size()[0], tgt.size()[1]).zero_()
@@ -330,7 +330,7 @@ class DoubleDiscrimTrainer(object):
 
             # compute outputs
             self.model.zero_grad()
-            outputs = self.model(src, src_lengths)
+            outputs, _ = self.model(src, src_lengths)
 
             # loss re: true_label, backprop through discrim
             true_l = [self.true_label]*outputs.size()[0]

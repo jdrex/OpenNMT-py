@@ -5,6 +5,7 @@ val.pred*
 *.png
 *.ark
 *.pt
+_*
 
 # repo-specific stuff
 pred.txt

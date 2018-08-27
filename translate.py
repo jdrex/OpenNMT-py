@@ -100,7 +100,7 @@ def main():
     if opt.useLM:
         lmPath = '/data/sls/scratch/jdrexler/OpenNMT-py/data/wsj/lms/wsj_trigram_with_bos/LG_pushed_withsyms.fst'
         print "LM:", lmPath
-        lm = onmt.translate.LanguageModel(lmPath, data.fields['tgt'].vocab.stoi)
+        lm = onmt.translate.LanguageModel(lmPath, fields['tgt'].vocab.stoi)
     else:
         lm = None
         

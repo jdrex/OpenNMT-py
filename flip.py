@@ -6,9 +6,9 @@ outf = open(sys.argv[1] + '.flip', 'w')
 
 for line in inf:
     line = line.strip()
-    line = re.sub('N', '$', line)
-    line = re.sub('O', 'N', line)
-    line = re.sub('\$', 'O', line)
+    line = re.sub('M', '$', line)
+    line = re.sub('U', 'M', line)
+    line = re.sub('\$', 'U', line)
     outf.write(line + '\n')
 
 inf.close()

@@ -88,10 +88,9 @@ class Statistics(object):
                    self.n_words / (t + 1e-5),
                    time.time() - start))
         except:
-            print(("Epoch %2d, %5d/%5d; loss: %6.2f; " +
+            print(("Epoch %2d, %5d/%5d; loss: N/A; " +
                    "%3.0f src tok/s; %3.0f tgt tok/s; %6.0f s elapsed") %
                   (epoch, batch,  n_batches,
-                   0.,
                    self.n_src_words / (t + 1e-5),
                    self.n_words / (t + 1e-5),
                    time.time() - start))
@@ -667,7 +666,7 @@ class AudioTextTrainerAdv(AudioTextTrainer):
 
         model.zero_grad()
         discrim_model.zero_grad()
-        outputs = discrim_model(src, src_lengths)
+        outputs, _ = discrim_model(src, src_lengths)
         l = [label]*outputs.size()[0]
         labels = Variable(torch.cuda.FloatTensor(l).view(-1,1))
         if src_lengths is not None:
@@ -830,7 +829,7 @@ class AudioTextSpeechTrainerAdv(AudioTextTrainer):
     def __init__(self, model, train_iter, valid_iter,
                  text_model, text_train_iter, text_valid_iter,
                  speech_model, speech_train_iter, 
-                 train_loss, text_loss, valid_loss, text_valid_loss, optim,
+                 train_loss, text_loss, valid_loss, text_valid_loss, optim, adv_optim, 
                  discrim_models, labels, gen_lambda=1., speech_lambda=1.,  
                  trunc_size=0, shard_size=32, data_type='text',
                  mult = 1, tMult = 1, unsup=False, big_text=False):
@@ -851,6 +850,9 @@ class AudioTextSpeechTrainerAdv(AudioTextTrainer):
         self.valid_loss = valid_loss
         self.text_valid_loss = text_valid_loss
         self.optim = optim
+        self.adv_optim = adv_optim
+        if adv_optim == None:
+            self.adv_optim = optim
 
         self.discrim_models = discrim_models
         self.labels = labels
@@ -893,6 +895,7 @@ class AudioTextSpeechTrainerAdv(AudioTextTrainer):
         report_stats = Statistics()
         text_total_stats = Statistics()
         speech_total_stats = Statistics()
+        discrim_total_stats = Statistics()
 
         asr_batches = [s for s in self.train_iter]
         
@@ -921,7 +924,8 @@ class AudioTextSpeechTrainerAdv(AudioTextTrainer):
             for j in range(multiplier):
                 print " speech:", i*multiplier + j
                 try:
-                    self.process_speech(speech_batches[i*multiplier + j], self.speech_model, self.discrim_models[0], self.labels[0], speech_total_stats, startMask, endMask, advOnly)
+                    self.process_speech(speech_batches[i*multiplier + j], self.speech_model, self.discrim_models[0], self.labels[0], speech_total_stats, discrim_total_stats,
+                                        startMask, endMask, advOnly)
                 except:
                     print "speech out of range"
                 for k in range(tMultiplier):
@@ -929,7 +933,7 @@ class AudioTextSpeechTrainerAdv(AudioTextTrainer):
                     try:
                         #self.process_batch(text_batches[i*multiplier + j*tMultiplier + k], self.text_model, "text",  None, self.labels[1], report_stats, text_total_stats)
                         self.process_batch(text_batches[i*multiplier + j*tMultiplier + k], self.text_model, "text",  self.discrim_models[1], self.labels[1], report_stats, text_total_stats,
-                                           startMask, endMask)
+                                           discrim_total_stats, startMask, endMask, advOnly)
                     except:
                         print "text out of range"
                 #try:
@@ -942,9 +946,9 @@ class AudioTextSpeechTrainerAdv(AudioTextTrainer):
                     epoch, i, nBatches,
                     total_stats.start_time, self.optim.lr, report_stats)
 
-        return total_stats, text_total_stats, speech_total_stats
+        return total_stats, text_total_stats, speech_total_stats, discrim_total_stats
 
-    def process_batch(self, batch, model, data_type, discrim_model, label, report_stats, total_stats, startMask=0, endMask=0, advOnly=False):
+    def process_batch(self, batch, model, data_type, discrim_model, label, report_stats, total_stats, discrim_stats=None, startMask=0, endMask=0, advOnly=False):
 
         dec_state = None
         src = onmt.io.make_features(batch, 'src', data_type)
@@ -993,7 +997,7 @@ class AudioTextSpeechTrainerAdv(AudioTextTrainer):
             return report_stats, total_stats
 
         discrim_model.zero_grad()
-        outputs = discrim_model(src, src_lengths)
+        outputs, _ = discrim_model(src, src_lengths)
         l = [label]*outputs.size()[0]
         labels = Variable(torch.cuda.FloatTensor(l).view(-1,1))
         if src_lengths is not None:
@@ -1011,18 +1015,18 @@ class AudioTextSpeechTrainerAdv(AudioTextTrainer):
 
         loss = self.criterion(outputs, labels)
         loss.backward()
-        #total_stats.update_loss(loss.data[0])
+        discrim_stats.update_loss(loss.data[0])
         #report_stats.update_loss(loss.data[0])
 
         # 4. Update the parameters and statistics.
-        self.optim.step()
+        self.adv_optim.step()
 
         model.zero_grad()
         discrim_model.zero_grad()
         
         return report_stats, total_stats
 
-    def process_speech(self, batch, model, discrim_model, label, total_stats, startMask, endMask, advOnly=False):
+    def process_speech(self, batch, model, discrim_model, label, total_stats, discrim_stats, startMask, endMask, advOnly=False):
         # Truncated BPTT
 
         dec_state = None
@@ -1078,7 +1082,7 @@ class AudioTextSpeechTrainerAdv(AudioTextTrainer):
             return total_stats
         
         discrim_model.zero_grad()
-        outputs = discrim_model(src, src_lengths)
+        outputs, _ = discrim_model(src, src_lengths)
         l = [label]*outputs.size()[0]
         labels = Variable(torch.cuda.FloatTensor(l).view(-1,1))
         if src_lengths is not None:
@@ -1096,9 +1100,10 @@ class AudioTextSpeechTrainerAdv(AudioTextTrainer):
 
         loss = self.criterion(outputs, labels)
         loss.backward()
+        discrim_stats.update_loss(loss.data[0])
 
         # 4. Update the parameters and statistics.
-        self.optim.step()
+        self.adv_optim.step()
 
         if model:
             model.zero_grad()
@@ -1230,6 +1235,174 @@ class AudioTextSpeechTrainerAdv(AudioTextTrainer):
         return '%s_acc_%.2f_ppl_%.2f_e%d.pt' % (opt.save_model, valid_stats.accuracy(),
                       valid_stats.ppl(), epoch)
 
+class AudioTextSpeechTrainerAdvFMatch(AudioTextSpeechTrainerAdv):
+    def train(self, epoch, report_func=None, batch_override=-1, text=None, startMask=0, endMask=0, advOnly=False):
+        """ Train next epoch.
+        Args:
+            epoch(int): the epoch number
+            report_func(fn): function for logging
+
+        Returns:
+            stats (:obj:`onmt.Statistics`): epoch loss statistics
+        """
+        total_stats = Statistics()
+        report_stats = Statistics()
+        text_total_stats = Statistics()
+        speech_total_stats = Statistics()
+        discrim_total_stats = Statistics()
+
+        asr_batches = [s for s in self.train_iter]
+        
+        nBatches = len(asr_batches)
+        if batch_override > 0:
+            nBatches = min(nBatches, batch_override)
+
+        #supBatches = min(len(text_batches), len(speech_batches))
+        multiplier = self.mult #int(supBatches/nBatches)
+        tMultiplier = self.tMult
+        speech_batches = [t for t in self.speech_train_iter][:nBatches*multiplier]
+        if self.big_text:
+            text_batches = [t for t in text]
+        else:
+            text_batches = [t for t in self.text_train_iter]#[:nBatches*multiplier*tMultiplier]
+        
+        print "nBatches:", nBatches
+        #print "mult:", multiplier
+
+        print "tot speech:", len(speech_batches)
+        print "tot text:", len(text_batches)
+        for i in range(nBatches):
+            if self.sup:
+                self.process_batch(asr_batches[i], self.model, "audio", None, self.labels[0], report_stats, total_stats, advOnly=advOnly)
+            for j in range(multiplier):
+                self.process_speech(speech_batches[i*multiplier + j], text_batches[-i*multiplier - j], self.speech_model, self.discrim_models, self.labels[0],
+                                    speech_total_stats, discrim_total_stats, report_stats, startMask, endMask, advOnly)
+                for k in range(tMultiplier):
+                    try:
+                        self.process_batch(text_batches[i*multiplier + j*tMultiplier + k], self.text_model, "text",  None, self.labels[1], report_stats, text_total_stats,
+                                           discrim_total_stats, startMask, endMask, advOnly)
+                    except:
+                        print "text out of range"
+                
+            if report_func is not None:
+                report_stats = report_func(
+                    epoch, i, nBatches,
+                    total_stats.start_time, self.optim.lr, report_stats)
+
+        return total_stats, text_total_stats, speech_total_stats, discrim_total_stats
+
+    def process_speech(self, batch, text_batch, model, discrim_models, label, total_stats, discrim_stats, report_stats, startMask, endMask, advOnly=False):
+        # Truncated BPTT
+
+        dec_state = None
+        src = onmt.io.make_features(batch, 'src', "audio")[:, :, :, :1400]
+        src_lengths = None
+
+        if model is not None and not advOnly:
+            tgt_outer = onmt.io.make_features(batch, 'src', "audio")[:, :, :, :1400]
+            tgt_outer = tgt_outer.squeeze()
+            try:
+                tgt_outer = tgt_outer.transpose(0, 2).transpose(1, 2)
+            except:
+                tgt_outer = tgt_outer.view(1, tgt_outer.size(0), tgt_outer.size(1))
+                tgt_outer = tgt_outer.transpose(0, 2).transpose(1, 2)
+
+            target_size = tgt_outer.size(0)
+            if self.ff:
+                trunc_size = target_size
+            else:
+                trunc_size = 200
+                
+            for j in range(0, target_size-1, trunc_size):
+                if j > 1400:
+                    break
+                #print target_size, tgt_outer.size(), j, j+trunc_size
+                # 1. Create truncated target.
+                tgt = tgt_outer[j: j + trunc_size]
+                model.zero_grad()
+                outputs, attns, dec_state = model(src, tgt, src_lengths, dec_state)
+
+                src_labels = tgt.squeeze().sum(1).data.cpu().numpy()
+                w = np.zeros(src_labels.shape)
+                w[src_labels != 0.] = self.speech_lambda
+                weights = torch.cuda.FloatTensor(w)
+                self.speech_loss.weight = weights.view(-1,1)[:outputs.size()[0], :]
+
+                loss = self.speech_loss(outputs, tgt[1:, :, :])
+                loss.backward()
+                total_stats.update_loss(loss.data[0])
+
+                # 4. Update the parameters and statistics.
+                self.optim.step()
+    
+                # If truncated, don't backprop fully.
+                if dec_state is not None:
+                    dec_state.detach()
+
+                #print "starting adverserial"
+                model.zero_grad()
+                
+        discrim_models[0].zero_grad()
+        discrim_models[1].zero_grad()
+        _, speech_features = discrim_models[0](src, src_lengths)
+        
+        text_src = onmt.io.make_features(text_batch, 'src', 'text')
+        _, text_src_lengths = text_batch.src
+        _, text_features = discrim_models[1](text_src, text_src_lengths)
+
+        avg_speech_features = torch.mean(speech_features, dim = 0)
+        avg_text_features = torch.mean(text_features, dim = 0)
+        
+        loss = torch.mean((avg_speech_features - avg_text_features) ** 2)
+        loss.backward()
+        discrim_stats.update_loss(loss.data[0])
+        report_stats.update_loss(loss.data[0])
+
+        # 4. Update the parameters and statistics.
+        self.adv_optim.step()
+
+        if model:
+            model.zero_grad()
+        discrim_models[0].zero_grad()
+        discrim_models[1].zero_grad()
+        
+        return total_stats
+
+    def validate(self):
+        """ Validate model.
+
+        Returns:
+            :obj:`onmt.Statistics`: validation loss statistics
+        """
+        # Set model in validating mode.
+        self.model.eval()
+
+        stats = Statistics()
+
+        for batch in self.valid_iter:
+            src = onmt.io.make_features(batch, 'src', self.data_type)
+            if self.data_type == 'text':
+                _, src_lengths = batch.src
+            else:
+                src_lengths = None
+
+            tgt = onmt.io.make_features(batch, 'tgt')
+
+            # F-prop through the model.
+            outputs, attns, _ = self.model(src, tgt, src_lengths)
+
+            # Compute loss.
+            batch_stats = self.valid_loss.monolithic_compute_loss(
+                    batch, outputs, attns)
+
+            # Update statistics.
+            stats.update(batch_stats)
+
+        # Set model back to training mode.
+        self.model.train()
+
+        return stats
+    
 class AdvTrainer(Trainer):
     def __init__(self, model, discrim_model, train_iter, valid_iter,
                  train_loss, valid_loss, optim, label, 

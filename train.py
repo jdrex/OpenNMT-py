@@ -251,14 +251,14 @@ def load_fields(train_dataset, valid_dataset, checkpoint):
     fields = dict([(k, f) for (k, f) in fields.items()
                   if k in train_dataset.examples[0].__dict__])
 
-    # We save fields in vocab.pt, so assign them back to dataset here.
-    train_dataset.fields = fields
-    valid_dataset.fields = fields
-
     if opt.train_from:
         print('Loading vocab from checkpoint at %s.' % opt.train_from)
         fields = onmt.io.load_fields_from_vocab(
                     checkpoint['vocab'], data_type)
+
+    # We save fields in vocab.pt, so assign them back to dataset here.
+    train_dataset.fields = fields
+    valid_dataset.fields = fields
 
     if data_type == 'text':
         print(' * vocabulary size. source = %d; target = %d' %
@@ -343,7 +343,17 @@ def main():
 
     # Load fields generated from preprocess phase.
     fields = load_fields(train_dataset, valid_dataset, checkpoint)
-
+    '''
+    print(fields['tgt'].vocab.stoi['M'])
+    m = fields['tgt'].vocab.stoi['M']
+    print(fields['tgt'].vocab.stoi['U'])
+    u = fields['tgt'].vocab.stoi['U']
+    fields['tgt'].vocab.itos[m] = 'U'
+    fields['tgt'].vocab.itos[u] = 'M'
+    fields['tgt'].vocab.stoi['U'] = m
+    fields['tgt'].vocab.stoi['M'] = u
+    '''
+    
     # Report src/tgt features.
     collect_report_features(fields)
 

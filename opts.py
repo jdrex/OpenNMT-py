@@ -314,6 +314,9 @@ def train_opts(parser):
     group.add_argument('-optim', default='sgd',
                        choices=['sgd', 'asgd', 'adagrad', 'adadelta', 'adam'],
                        help="""Optimization method.""")
+    group.add_argument('-adv_optim', default='sgd',
+                       choices=['sgd', 'asgd', 'adagrad', 'adadelta', 'adam'],
+                       help="""Optimization method.""")
     group.add_argument('-adagrad_accumulator_init', type=float, default=0,
                        help="""Initializes the accumulator values in adagrad.
                        Mirrors the initial_accumulator_value option
@@ -355,6 +358,10 @@ def train_opts(parser):
     # learning rate
     group = parser.add_argument_group('Optimization- Rate')
     group.add_argument('-learning_rate', type=float, default=1.0,
+                       help="""Starting learning rate.
+                       Recommended settings: sgd = 1, adagrad = 0.1,
+                       adadelta = 1, adam = 0.001""")
+    group.add_argument('-adv_learning_rate', type=float, default=1.0,
                        help="""Starting learning rate.
                        Recommended settings: sgd = 1, adagrad = 0.1,
                        adadelta = 1, adam = 0.001""")

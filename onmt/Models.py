@@ -1032,26 +1032,8 @@ class DiscrimModel(nn.Module):
         """
         src = src
         enc_hidden, context = self.encoder(src, lengths)
-        # context = len x batch x dim
-        '''
-        enc_hidden = torch.cat((enc_hidden[0], enc_hidden[1]), 0)
-        enc_hidden = enc_hidden.permute(1, 0, 2)
-        #print "encoder hidden size:", enc_hidden.size()
-        s = enc_hidden.size()
-        enc_hidden = enc_hidden.contiguous()
-        enc_hidden = enc_hidden.view(s[0], s[1]*s[2])
-        '''
-        #print "encoder hidden size:", enc_hidden.size()
-        # enc_hidden = last hidden state
-        # context = all hidden states
-
-        # two options:
-        # - MLP that just operates on the last state (like orig paper)
-        #   - should probably redo decoder that doesn't use context for decoding at all
-        #   - actually maybe it already doesn't????
-        # - recurrent model that operates on whole context
-        out = self.classifier(context.view(-1, context.size(2)))
-        return out
+        out, features = self.classifier(context.view(-1, context.size(2)))
+        return out, features
 
 class FFAudioDecoder(nn.Module):
     def __init__(self, input_size, hidden_size, num_layers):
@@ -1086,17 +1068,26 @@ class DiscrimClassifier(nn.Module):
         self.hidden_size = hidden_size
         self.num_layers = num_layers
 
-        layers = [nn.Linear(self.input_size, self.hidden_size), nn.LeakyReLU()]
+        self.layers = [nn.Linear(self.input_size, self.hidden_size), nn.LeakyReLU()]
         for l in range(num_layers-1):
-            layers.append(nn.Linear(self.hidden_size, self.hidden_size))
-            layers.append(nn.LeakyReLU())
-        layers.append(nn.Linear(self.hidden_size, 1)) # 2 for CELoss
+            self.layers.append(nn.Linear(self.hidden_size, self.hidden_size))
+            self.layers.append(nn.LeakyReLU())
+        self.layers.append(nn.Linear(self.hidden_size, 1)) # 2 for CELoss
         #layers.append(nn.Sigmoid())
 
-        self.classifier = nn.Sequential(*layers)
+        self.feature_layer = len(self.layers) - 2
+
+        self.classifier = nn.Sequential(*self.layers)
         
     def forward(self, input):
-        return self.classifier(input)
+        features = None
+        layer_in = input
+        for l, layer in enumerate(self.layers):
+            layer_out = layer(layer_in)
+            if l == self.feature_layer:
+                features = layer_out
+            layer_in = layer_out
+        return layer_out, features
 
 class DecoderState(object):
     """Interface for grouping together the current state of a recurrent
