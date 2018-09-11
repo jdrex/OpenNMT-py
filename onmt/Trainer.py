@@ -222,15 +222,15 @@ class Trainer(object):
             s_n[:s_l_n[s], s] = s_n[indexes, s]
 
         sort_order = np.flip(np.argsort(s_l_n), 0)
-        print sort_order
+        #print sort_order
         
         sorted_lens = s_l_n[sort_order]
         sorted_src = s_n[:, sort_order]
         sorted_tgt = t_n[:, sort_order]
         
-        print s_l_n.shape, src_lengths.size(), sorted_lens.shape
-        print s_n.shape, src.size(), sorted_src.shape
-        print t_n.shape, tgt_outer.size(), sorted_tgt.shape
+        #print s_l_n.shape, src_lengths.size(), sorted_lens.shape
+        #print s_n.shape, src.size(), sorted_src.shape
+        #print t_n.shape, tgt_outer.size(), sorted_tgt.shape
         
         src_lengths = torch.cuda.LongTensor(sorted_lens)
         src = Variable(torch.cuda.LongTensor(sorted_src))
@@ -829,7 +829,7 @@ class AudioTextSpeechTrainerAdv(AudioTextTrainer):
     def __init__(self, model, train_iter, valid_iter,
                  text_model, text_train_iter, text_valid_iter,
                  speech_model, speech_train_iter, 
-                 train_loss, text_loss, valid_loss, text_valid_loss, optim, adv_optim, 
+                 train_loss, text_loss, valid_loss, text_valid_loss, optim, adv_optim, speech_optim, 
                  discrim_models, labels, gen_lambda=1., speech_lambda=1.,  
                  trunc_size=0, shard_size=32, data_type='text',
                  mult = 1, tMult = 1, unsup=False, big_text=False):
@@ -853,6 +853,10 @@ class AudioTextSpeechTrainerAdv(AudioTextTrainer):
         self.adv_optim = adv_optim
         if adv_optim == None:
             self.adv_optim = optim
+
+        self.speech_optim = speech_optim
+        if speech_optim == None:
+            self.speech_optim = optim
 
         self.discrim_models = discrim_models
         self.labels = labels
@@ -912,24 +916,24 @@ class AudioTextSpeechTrainerAdv(AudioTextTrainer):
         else:
             text_batches = [t for t in self.text_train_iter]#[:nBatches*multiplier*tMultiplier]
         
-        print "nBatches:", nBatches
+        #print "nBatches:", nBatches
         #print "mult:", multiplier
 
-        print "tot speech:", len(speech_batches)
-        print "tot text:", len(text_batches)
+        #print "tot speech:", len(speech_batches)
+        #print "tot text:", len(text_batches)
         for i in range(nBatches):
-            print "batch:", i
+            #print "batch:", i
             if self.sup:
                 self.process_batch(asr_batches[i], self.model, "audio", None, self.labels[0], report_stats, total_stats, advOnly=advOnly)
             for j in range(multiplier):
-                print " speech:", i*multiplier + j
+                #print " speech:", i*multiplier + j
                 try:
                     self.process_speech(speech_batches[i*multiplier + j], self.speech_model, self.discrim_models[0], self.labels[0], speech_total_stats, discrim_total_stats,
                                         startMask, endMask, advOnly)
                 except:
                     print "speech out of range"
                 for k in range(tMultiplier):
-                    print " text:", i*multiplier*tMultiplier + j*tMultiplier + k
+                    #print " text:", i*multiplier*tMultiplier + j*tMultiplier + k
                     try:
                         #self.process_batch(text_batches[i*multiplier + j*tMultiplier + k], self.text_model, "text",  None, self.labels[1], report_stats, text_total_stats)
                         self.process_batch(text_batches[i*multiplier + j*tMultiplier + k], self.text_model, "text",  self.discrim_models[1], self.labels[1], report_stats, text_total_stats,
@@ -1069,7 +1073,7 @@ class AudioTextSpeechTrainerAdv(AudioTextTrainer):
                 total_stats.update_loss(loss.data[0])
 
                 # 4. Update the parameters and statistics.
-                self.optim.step()
+                self.speech_optim.step()
     
                 # If truncated, don't backprop fully.
                 if dec_state is not None:
@@ -1266,23 +1270,23 @@ class AudioTextSpeechTrainerAdvFMatch(AudioTextSpeechTrainerAdv):
         else:
             text_batches = [t for t in self.text_train_iter]#[:nBatches*multiplier*tMultiplier]
         
-        print "nBatches:", nBatches
+        #print "nBatches:", nBatches
         #print "mult:", multiplier
 
-        print "tot speech:", len(speech_batches)
-        print "tot text:", len(text_batches)
+        #print "tot speech:", len(speech_batches)
+        #print "tot text:", len(text_batches)
         for i in range(nBatches):
             if self.sup:
                 self.process_batch(asr_batches[i], self.model, "audio", None, self.labels[0], report_stats, total_stats, advOnly=advOnly)
             for j in range(multiplier):
                 self.process_speech(speech_batches[i*multiplier + j], text_batches[-i*multiplier - j], self.speech_model, self.discrim_models, self.labels[0],
                                     speech_total_stats, discrim_total_stats, report_stats, startMask, endMask, advOnly)
-                for k in range(tMultiplier):
-                    try:
-                        self.process_batch(text_batches[i*multiplier + j*tMultiplier + k], self.text_model, "text",  None, self.labels[1], report_stats, text_total_stats,
-                                           discrim_total_stats, startMask, endMask, advOnly)
-                    except:
-                        print "text out of range"
+            for k in range(tMultiplier):
+                try:
+                    self.process_batch(text_batches[i*tMultiplier + k], self.text_model, "text",  None, self.labels[1], report_stats, text_total_stats,
+                                       discrim_total_stats, startMask, endMask, advOnly)
+                except:
+                    print "text out of range"
                 
             if report_func is not None:
                 report_stats = report_func(
@@ -1333,7 +1337,7 @@ class AudioTextSpeechTrainerAdvFMatch(AudioTextSpeechTrainerAdv):
                 total_stats.update_loss(loss.data[0])
 
                 # 4. Update the parameters and statistics.
-                self.optim.step()
+                self.speech_optim.step()
     
                 # If truncated, don't backprop fully.
                 if dec_state is not None:
@@ -1497,12 +1501,12 @@ class AdvTrainer(Trainer):
 
             self.optim.step()
             outputs_2 = self.discrim_model(src, src_lengths)
-            
+            '''
             if i % 10 == 0:
                 print "adverserial:", i, self.label
                 print outputs.data[0:5]
                 print outputs_2.data[0:5]
-
+            '''
             if report_func is not None:
                 report_stats = report_func(
                         epoch, i, len(self.train_iter),
@@ -1598,28 +1602,28 @@ class UnsupTrainer(Trainer):
         if self.trainCD:
             src_tgt_batches = [s for s in self.cd_iters["src-tgt"]]
             tgt_src_batches = [s for s in self.cd_iters["tgt-src"]]
-            print len(src_tgt_batches), len(tgt_src_batches)
+            #print len(src_tgt_batches), len(tgt_src_batches)
             nBatches = min(len(src_batches), len(tgt_batches), len(src_tgt_batches), len(tgt_src_batches))
         else:
             nBatches = min(len(src_batches), len(tgt_batches))
 
-        print "nBatches:", nBatches
+        #print "nBatches:", nBatches
         for i in range(nBatches):
-            print "batch", i
-            print "processing src"
+            #print "batch", i
+            #print "processing src"
             self.process_batch(src_batches[i], self.src_model, self.src_optim, self.src_train_loss,
                             self.src_discrim_model, self.src_label, report_stats, total_stats)
 
             if self.tgt_optim is not None:
-                print "processing tgt"
+                #print "processing tgt"
                 self.process_batch(tgt_batches[i], self.tgt_model, self.tgt_optim, self.tgt_train_loss,
                           self.tgt_discrim_model, self.tgt_label, report_stats, total_stats)
 
             if self.trainCD:
-                print "processing src_tgt"
+                #print "processing src_tgt"
                 self.process_batch(src_tgt_batches[i], self.src_tgt_model, self.src_tgt_optim, self.src_tgt_train_loss,
                             self.src_discrim_model, self.src_label, report_stats, total_stats)
-                print "processing tgt_src"
+                #print "processing tgt_src"
                 self.process_batch(tgt_src_batches[i], self.tgt_src_model, self.tgt_src_optim, self.tgt_src_train_loss,
                             self.tgt_discrim_model, self.tgt_label, report_stats, total_stats)
                 
@@ -1643,7 +1647,7 @@ class UnsupTrainer(Trainer):
         tgt_outer = onmt.io.make_features(batch, 'tgt')
 
         #src_lengths, src, tgt_outer = self.add_noise(src_lengths, src, tgt_outer)
-        print "BATCH INPUT:", src.size()
+        #print "BATCH INPUT:", src.size()
         report_stats.n_src_words += src_lengths.sum()
 
         for j in range(0, target_size-1, trunc_size):

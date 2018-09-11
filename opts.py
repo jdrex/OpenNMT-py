@@ -28,11 +28,15 @@ def model_opts(parser):
                         help='Number of layers in the discriminator')
     parser.add_argument('-no_adv', action='store_true', default=False,
                         help='Number of layers in the discriminator')
+    parser.add_argument('-feature_match', action='store_true', default=False,
+                        help='Number of layers in the discriminator')
 
     # discriminator
     parser.add_argument('-discrim_layers', type=int, default=3,
                         help='Number of layers in the discriminator')
     parser.add_argument('-discrim_size', type=int, default=1024,
+                        help='Size of discriminator hidden states')
+    parser.add_argument('-hidden_size', type=int, default=-1,
                         help='Size of discriminator hidden states')
     
     group = parser.add_argument_group('Model-Embeddings')
@@ -94,6 +98,12 @@ def model_opts(parser):
     group.add_argument('-dec_layers', type=int, default=2,
                        help='Number of layers in the decoder')
     group.add_argument('-rnn_size', type=int, default=500,
+                       help='Size of rnn hidden states')
+    group.add_argument('-enc_rnn_size', type=int, default=500,
+                       help='Size of rnn hidden states')
+    group.add_argument('-enc_output_size', type=int, default=500,
+                       help='Size of rnn hidden states')
+    group.add_argument('-dec_rnn_size', type=int, default=500,
                        help='Size of rnn hidden states')
     group.add_argument('-cnn_kernel_width', type=int, default=3,
                        help="""Size of windows in the cnn, the kernel_size is
@@ -281,6 +291,9 @@ def train_opts(parser):
     group.add_argument('-train_from', default='', type=str,
                        help="""If training from a checkpoint then this is the
                        path to the pretrained model's state_dict.""")
+    group.add_argument('-compare_checkpoint', default='', type=str,
+                       help="""If training from a checkpoint then this is the
+                       path to the pretrained model's state_dict.""")
 
     # Pretrained word vectors
     group.add_argument('-pre_word_vecs_enc',
@@ -315,6 +328,9 @@ def train_opts(parser):
                        choices=['sgd', 'asgd', 'adagrad', 'adadelta', 'adam'],
                        help="""Optimization method.""")
     group.add_argument('-adv_optim', default='sgd',
+                       choices=['sgd', 'asgd', 'adagrad', 'adadelta', 'adam'],
+                       help="""Optimization method.""")
+    group.add_argument('-speech_optim', default='sgd',
                        choices=['sgd', 'asgd', 'adagrad', 'adadelta', 'adam'],
                        help="""Optimization method.""")
     group.add_argument('-adagrad_accumulator_init', type=float, default=0,
@@ -362,6 +378,10 @@ def train_opts(parser):
                        Recommended settings: sgd = 1, adagrad = 0.1,
                        adadelta = 1, adam = 0.001""")
     group.add_argument('-adv_learning_rate', type=float, default=1.0,
+                       help="""Starting learning rate.
+                       Recommended settings: sgd = 1, adagrad = 0.1,
+                       adadelta = 1, adam = 0.001""")
+    group.add_argument('-speech_learning_rate', type=float, default=1.0,
                        help="""Starting learning rate.
                        Recommended settings: sgd = 1, adagrad = 0.1,
                        adadelta = 1, adam = 0.001""")

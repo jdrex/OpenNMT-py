@@ -44,6 +44,15 @@ if opt.layers != -1:
     opt.dec_layers = opt.layers
 
 opt.brnn = (opt.encoder_type == "brnn")
+
+try:
+    print("hidden size:", opt.hidden_size)
+except:
+    opt.hidden_size = opt.rnn_size
+    
+if opt.hidden_size == -1:
+    opt.hidden_size = opt.rnn_size
+    
 if opt.seed > 0:
     random.seed(opt.seed)
     torch.manual_seed(opt.seed)
@@ -185,7 +194,7 @@ def train_model(model, train_dataset, valid_dataset, fields,
                 text_model, text_train_dataset, text_valid_dataset, text_fields,
                 speech_model, speech_train_dataset,
                 discrim_models, discrim_optims,
-                optim, model_opt, big_text):
+                optim, adv_optim, speech_optim, model_opt, big_text):
 
     train_iter = make_train_data_iter(train_dataset, opt)
     valid_iter = make_valid_data_iter(valid_dataset, opt)
@@ -225,14 +234,32 @@ def train_model(model, train_dataset, valid_dataset, fields,
 
     if opt.no_adv:
         discrim_models = [None,None]
-        
-    trainer = onmt.AudioTextSpeechTrainerAdv(model, train_iter, valid_iter,
-                                             text_model, text_train_iter, text_valid_iter, 
-                                             speech_model, speech_train_iter,
-                                             train_loss, text_loss, valid_loss, text_valid_loss, optim, None,
-                                             discrim_models, [model_opt.gen_label, model_opt.gen_label], model_opt.gen_lambda,  speech_lambda, 
-                                             trunc_size, shard_size, data_type,
-                                             model_opt.mult, model_opt.t_mult, model_opt.unsup, big_text=big_text)
+
+    try:
+        if opt.feature_match:
+            trainer = onmt.AudioTextSpeechTrainerAdvFMatch(model, train_iter, valid_iter,
+                                                           text_model, text_train_iter, text_valid_iter, 
+                                                           speech_model, speech_train_iter,
+                                                           train_loss, text_loss, valid_loss, text_valid_loss, optim, adv_optim, speech_optim,
+                                                           discrim_models, [model_opt.gen_label, model_opt.gen_label], model_opt.gen_lambda,  speech_lambda, 
+                                                           trunc_size, shard_size, data_type,
+                                                           model_opt.mult, model_opt.t_mult, model_opt.unsup, big_text=big_text)
+        else:
+            trainer = onmt.AudioTextSpeechTrainerAdv(model, train_iter, valid_iter,
+                                                     text_model, text_train_iter, text_valid_iter, 
+                                                     speech_model, speech_train_iter,
+                                                     train_loss, text_loss, valid_loss, text_valid_loss, optim, adv_optim, speech_optim,
+                                                     discrim_models, [model_opt.gen_label, model_opt.gen_label], model_opt.gen_lambda,  speech_lambda, 
+                                                     trunc_size, shard_size, data_type,
+                                                     model_opt.mult, model_opt.t_mult, model_opt.unsup, big_text=big_text)
+    except:
+        trainer = onmt.AudioTextSpeechTrainerAdv(model, train_iter, valid_iter,
+                                                 text_model, text_train_iter, text_valid_iter, 
+                                                 speech_model, speech_train_iter,
+                                                 train_loss, text_loss, valid_loss, text_valid_loss, optim, adv_optim, speech_optim,
+                                                 discrim_models, [model_opt.gen_label, model_opt.gen_label], model_opt.gen_lambda,  speech_lambda, 
+                                                 trunc_size, shard_size, data_type,
+                                                 model_opt.mult, model_opt.t_mult, model_opt.unsup, big_text=big_text)
 
     if opt.ff_speech_decoder:
         trainer.ff = True
@@ -487,8 +514,59 @@ def build_optim(model, text_model, speech_model, checkpoint):
     optim.set_parameters(text_model.encoder.parameters())
     if speech_model:
         optim.set_parameters(speech_model.decoder.parameters())
+        optim.set_parameters(speech_model.globalEncoder.parameters())
 
-    return optim
+    try:
+        print('Loading speech optimizer from checkpoint.')
+        optim = checkpoint['speech_optim']
+        speech_optim.optimizer.load_state_dict(
+            checkpoint['speech_optim'].optimizer.state_dict())
+    except:
+        # what members of opt does Optim need?
+        speech_optim = onmt.Optim(
+            opt.speech_optim, opt.speech_learning_rate, opt.max_grad_norm,
+            lr_decay=opt.learning_rate_decay,
+            start_decay_at=opt.start_decay_at,
+            beta1=opt.adam_beta1,
+            beta2=opt.adam_beta2,
+            adagrad_accum=opt.adagrad_accumulator_init,
+            decay_method=opt.decay_method,
+            warmup_steps=opt.warmup_steps,
+            model_size=opt.rnn_size)
+
+    speech_optim.set_parameters(speech_model.parameters())
+
+    try:
+        adv_optim = checkpoint['adv_optim']
+        adv_optim.optimizer.load_state_dict(
+            checkpoint['adv_optim'].optimizer.state_dict())
+    except:
+        # what members of opt does Optim need?
+        adv_optim = onmt.Optim(
+            opt.adv_optim, opt.adv_learning_rate, opt.max_grad_norm,
+            lr_decay=opt.learning_rate_decay,
+            start_decay_at=opt.start_decay_at,
+            beta1=opt.adam_beta1,
+            beta2=opt.adam_beta2,
+            adagrad_accum=opt.adagrad_accumulator_init,
+            decay_method=opt.decay_method,
+            warmup_steps=opt.warmup_steps,
+            model_size=opt.rnn_size)
+
+    if not opt.feature_match:
+        adv_optim.set_parameters(model.encoder.parameters())
+        adv_optim.set_parameters(text_model.encoder.parameters())
+    else:
+        if opt.gen_label == 0.1:
+            # move text to match speech
+            print('gen_label = 0.1: adv training only modifies text encodings')
+            adv_optim.set_parameters(text_model.encoder.parameters())
+        else:
+            # move speech to match text
+            adv_optim.set_parameters(text_model.encoder.parameters()) # get rid of this later
+            adv_optim.set_parameters(model.encoder.parameters())
+            
+    return optim, adv_optim, speech_optim
 
 def build_discrim_optim(model, checkpoint, ind):
     if opt.train_from:
@@ -549,6 +627,15 @@ def main():
         else:
             discrim_checkpoint = torch.load(opt.train_from + ".disc",
                                 map_location=lambda storage, loc: storage)
+
+        try:
+            print("hidden size:", model_opt.hidden_size)
+        except:
+            model_opt.hidden_size = model_opt.rnn_size
+            
+        if model_opt.hidden_size == -1:
+            model_opt.hidden_size = model_opt.rnn_size
+
     else:
         checkpoint = None
         discrim_checkpoint = None
@@ -574,7 +661,7 @@ def main():
     check_save_model_path()
 
     # Build optimizer.
-    optim = build_optim(model, text_model, speech_model, checkpoint)
+    optim, adv_optim, speech_optim = build_optim(model, text_model, speech_model, checkpoint)
     discrim_optims = []
     if not opt.no_adv:
         for i, m in enumerate(discrim_models):
@@ -585,7 +672,7 @@ def main():
                 text_model, text_train_dataset, text_valid_dataset, text_fields,
                 speech_model, speech_train_dataset,
                 discrim_models, discrim_optims, 
-                optim, model_opt, big_text)
+                optim, adv_optim, speech_optim, model_opt, big_text)
 
 
 if __name__ == "__main__":
